@@ -1,13 +1,13 @@
 package dev.frozenmilk.mercurial.bindings
 
-import dev.frozenmilk.dairy.core.util.supplier.numeric.EnhancedComparableSupplier
+import dev.frozenmilk.dairy.core.util.supplier.numeric.EnhancedComparableNumericSupplier
 import dev.frozenmilk.dairy.core.util.supplier.numeric.EnhancedDoubleSupplier
 import dev.frozenmilk.dairy.core.util.supplier.numeric.IEnhancedNumericSupplier
 import dev.frozenmilk.dairy.core.util.supplier.numeric.MotionComponents
 import dev.frozenmilk.util.modifier.Modifier
 import java.util.function.Supplier
 
-class BoundDoubleSupplier(private val numberSupplier: IEnhancedNumericSupplier<Double>) : IEnhancedNumericSupplier<Double>, EnhancedComparableSupplier<Double, BoundConditional<Double>> {
+class BoundDoubleSupplier(private val numberSupplier: IEnhancedNumericSupplier<Double>) : EnhancedComparableNumericSupplier<Double, BoundConditional<Double>> {
 	constructor(supplier: Supplier<Double>) : this(EnhancedDoubleSupplier(supplier))
 	override val supplier
 		get() = numberSupplier.supplier
