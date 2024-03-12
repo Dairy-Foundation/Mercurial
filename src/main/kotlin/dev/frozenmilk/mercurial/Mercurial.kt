@@ -12,6 +12,7 @@ import dev.frozenmilk.mercurial.collections.emptyMutableWeakRefSet
 import dev.frozenmilk.mercurial.commands.Command
 import dev.frozenmilk.mercurial.subsystems.Subsystem
 import dev.frozenmilk.util.cell.LazyCell
+import java.lang.annotation.Inherited
 import java.util.Collections
 import java.util.WeakHashMap
 
@@ -207,5 +208,9 @@ object Mercurial : Feature {
 		gamepad2Cell.invalidate()
 	}
 
+	@Retention(AnnotationRetention.RUNTIME)
+	@Target(AnnotationTarget.CLASS)
+	@MustBeDocumented
+	@Inherited
 	annotation class Attach
 }
