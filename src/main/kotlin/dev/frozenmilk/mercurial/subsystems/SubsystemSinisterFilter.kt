@@ -8,6 +8,8 @@ import dev.frozenmilk.sinister.targeting.NarrowSearch
 private object SubsystemSinisterFilter : SinisterFilter {
 	override val targets = NarrowSearch()
 
+	override fun init() {}
+
 	override fun filter(clazz: Class<*>) {
 		clazz.staticInstancesOf(Subsystem::class.java)
 				.forEach {
