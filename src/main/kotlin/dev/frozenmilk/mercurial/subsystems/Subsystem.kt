@@ -11,7 +11,9 @@ import dev.frozenmilk.sinister.Preload
  */
 interface Subsystem : Feature {
 	/**
-	 * the default command of the subsystem, null if none, DO NOT OVERRIDE
+	 * the default command of the subsystem, null if none
+	 *
+	 * DO NOT OVERRIDE EITHER GET OR SET
 	 */
 	var defaultCommand: Command?
 		get() {
