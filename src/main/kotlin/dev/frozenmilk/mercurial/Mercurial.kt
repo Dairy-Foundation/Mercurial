@@ -1,8 +1,8 @@
 package dev.frozenmilk.mercurial
 
 import dev.frozenmilk.dairy.core.Feature
-import dev.frozenmilk.dairy.core.dependencyresolution.dependencies.Dependency
-import dev.frozenmilk.dairy.core.dependencyresolution.dependencyset.DependencySet
+import dev.frozenmilk.dairy.core.dependency.annotation.SingleAnnotation
+import dev.frozenmilk.dairy.core.dependency.feature.SingleFeature
 import dev.frozenmilk.dairy.core.wrapper.Wrapper
 import dev.frozenmilk.dairy.core.wrapper.Wrapper.OpModeState
 import dev.frozenmilk.dairy.pasteurized.Pasteurized
@@ -23,9 +23,7 @@ object Mercurial : Feature {
 	//
 	// Dependencies
 	//
-	override val dependencies: Set<Dependency<*, *>> = DependencySet(this)
-			.includesExactlyOneOf(Attach::class.java)
-			.dependsDirectlyOn(Pasteurized)
+	override val dependency = SingleAnnotation(Attach::class.java) and SingleFeature(Pasteurized)
 
 	//
 	// Fields

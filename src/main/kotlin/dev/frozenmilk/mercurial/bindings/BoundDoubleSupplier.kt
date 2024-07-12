@@ -48,8 +48,8 @@ class BoundDoubleSupplier(private val numberSupplier: IEnhancedNumericSupplier<D
 	override fun findErrorRawVelocity(target: Double) = numberSupplier.findErrorRawVelocity(target)
 	override fun findErrorVelocity(target: Double) = numberSupplier.findErrorVelocity(target)
 	override fun findErrorPosition(target: Double) = numberSupplier.findErrorPosition(target)
-	override val dependencies
-		get() = numberSupplier.dependencies
+	override val dependency
+		get() = numberSupplier.dependency
 
 	override fun conditionalBindPosition() = BoundConditional(this::position)
 	override fun conditionalBindVelocity() = BoundConditional(this::velocity)
