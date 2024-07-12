@@ -43,7 +43,7 @@ object Mercurial : Feature {
 
 	// Internal
 	private val toSchedule = mutableListOf<Command>()
-	private val toCancel = mutableListOf<Pair<Boolean, Command>>()
+	private val toEnd = mutableListOf<Pair<Boolean, Command>>()
 	private val subsystems = mutableSetOf<Subsystem>()
 	private val enabledSubsystems = mutableSetOf<Subsystem>()
 	private val requirementMap = WeakHashMap<Subsystem, Command>()
@@ -90,7 +90,7 @@ object Mercurial : Feature {
 
 	@JvmStatic
 	fun cancelCommand(command: Command) {
-		toCancel.add(true to command)
+		toEnd.add(true to command)
 	}
 
 	@JvmStatic
@@ -104,8 +104,8 @@ object Mercurial : Feature {
 		bindings.add(binding)
 	}
 
-	private fun clearToCancel() {
-		toCancel.forEach {(interrupted, command) ->
+	private fun clearToEnd() {
+		toEnd.forEach { (interrupted, command) ->
 			if (!isScheduled(command)) return@forEach
 			command.end(interrupted)
 			for (requirement in command.requiredSubsystems) {
@@ -113,7 +113,7 @@ object Mercurial : Feature {
 			}
 		}
 
-		toCancel.clear()
+		toEnd.clear()
 	}
 
 	private fun clearToSchedule(state: OpModeState) {
@@ -140,7 +140,7 @@ object Mercurial : Feature {
 			// cancel all required commands
 			command.requiredSubsystems.forEach {
 				val requiringCommand = requirementMap[it]
-				if(requiringCommand != null) { toCancel.add(true to requiringCommand) }
+				if(requiringCommand != null) { toEnd.add(true to requiringCommand) }
 			}
 			i += 1
 		}
@@ -158,11 +158,11 @@ object Mercurial : Feature {
 	private fun resolveSchedulerUpdate(runState: OpModeState) {
 		// checks to see if any commands are finished, if so, cancels them
 		requirementMap.values.forEach {
-			if (it.finished()) toCancel.add(false to it)
+			if (it.finished()) toEnd.add(false to it)
 		}
 
 		// cancel the commands
-		clearToCancel()
+		clearToEnd()
 
 		// schedule any default commands that can be scheduled
 		val incomingRequirements = toSchedule.flatMap { it.requiredSubsystems }.toSet() // try our hardest not to schedule default commands that have something coming in
@@ -176,7 +176,7 @@ object Mercurial : Feature {
 		clearToSchedule(runState)
 
 		// cancel the commands that got cancelled by the scheduling of new commands
-		clearToCancel()
+		clearToEnd()
 
 		// execute commands
 		requirementMap.values.forEach { it.execute() }
