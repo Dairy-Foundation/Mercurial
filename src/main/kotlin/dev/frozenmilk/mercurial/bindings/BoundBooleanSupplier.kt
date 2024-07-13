@@ -5,8 +5,7 @@ import dev.frozenmilk.dairy.core.util.supplier.logical.IEnhancedBooleanSupplier
 import dev.frozenmilk.mercurial.commands.Command
 import java.util.function.Supplier
 
-@JvmInline
-value class BoundBooleanSupplier(val supplier: IEnhancedBooleanSupplier) : IEnhancedBooleanSupplier by supplier {
+class BoundBooleanSupplier(val supplier: IEnhancedBooleanSupplier) : IEnhancedBooleanSupplier by supplier {
 	constructor(supplier: Supplier<Boolean>) : this(EnhancedBooleanSupplier(supplier))
 	/**
 	 * registers [toRun] to be triggered when this condition becomes true
