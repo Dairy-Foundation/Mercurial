@@ -5,7 +5,8 @@ import dev.frozenmilk.dairy.core.util.supplier.logical.IEnhancedBooleanSupplier
 import dev.frozenmilk.mercurial.commands.Command
 import java.util.function.Supplier
 
-class BoundBooleanSupplier(supplier: IEnhancedBooleanSupplier) : IEnhancedBooleanSupplier by supplier {
+@JvmInline
+value class BoundBooleanSupplier(val supplier: IEnhancedBooleanSupplier) : IEnhancedBooleanSupplier by supplier {
 	constructor(supplier: Supplier<Boolean>) : this(EnhancedBooleanSupplier(supplier))
 	/**
 	 * registers [toRun] to be triggered when this condition becomes true
@@ -89,4 +90,28 @@ class BoundBooleanSupplier(supplier: IEnhancedBooleanSupplier) : IEnhancedBoolea
 		Binding.runCommand(this::toggleFalse, toRun.intoLambdaCommand().addFinish(this::toggleFalse))
 		return this
 	}
+
+	//
+	// Debounce Op Overrides
+	//
+
+	override fun debounce(rising: Double, falling: Double) = BoundBooleanSupplier(supplier.debounce(rising, falling))
+	override fun debounce(debounce: Double) = BoundBooleanSupplier(supplier.debounce(debounce))
+	override fun debounceRisingEdge(debounce: Double) = BoundBooleanSupplier(supplier.debounceRisingEdge(debounce))
+	override fun debounceFallingEdge(debounce: Double) = BoundBooleanSupplier(supplier.debounceFallingEdge(debounce))
+
+	//
+	// Logical op overrides
+	//
+
+	override fun and(booleanSupplier: Supplier<Boolean>) = BoundBooleanSupplier(supplier and  booleanSupplier)
+	override fun and(booleanSupplier: IEnhancedBooleanSupplier) = BoundBooleanSupplier(supplier and  booleanSupplier)
+
+	override fun or(booleanSupplier: Supplier<Boolean>) = BoundBooleanSupplier(supplier or  booleanSupplier)
+	override fun or(booleanSupplier: IEnhancedBooleanSupplier) = BoundBooleanSupplier(supplier or  booleanSupplier)
+
+	override fun xor(booleanSupplier: Supplier<Boolean>) = BoundBooleanSupplier(supplier xor booleanSupplier)
+	override fun xor(booleanSupplier: IEnhancedBooleanSupplier) = BoundBooleanSupplier(supplier xor booleanSupplier)
+
+	override fun not() = BoundBooleanSupplier(!supplier)
 }
