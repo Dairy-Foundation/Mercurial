@@ -22,12 +22,12 @@ abstract class CommandGroup : Command {
 
 	override fun execute() {
 		_activeCommands.forEach { if (it.finished()) endQueue.add(it to false) }
-		endQueue.forEach {
+		endQueue.asReversed().distinctBy { it.first }.asReversed().forEach {
 			it.first.end(it.second)
 			_activeCommands.remove(it.first)
 		}
 		endQueue.clear()
-		initQueue.forEach {
+		initQueue.asReversed().distinct().asReversed().forEach {
 			it.initialise()
 			_activeCommands.add(it)
 		}

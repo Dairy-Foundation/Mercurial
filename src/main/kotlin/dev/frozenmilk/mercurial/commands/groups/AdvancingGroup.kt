@@ -17,13 +17,19 @@ class AdvancingGroup(commands: Iterable<Command>) : CommandGroup() {
 	fun addCommands(commands: Collection<Command>) = AdvancingGroup(this.commands.plus(commands))
 	override val commands = commands.toList()
 	private var iterator: Iterator<Command>? = null
+	private fun advance() {
+		if (iterator?.hasNext() == true) {
+			activeCommands.forEach { endQueue.add(it to true) }
+			initQueue.add(iterator!!.next())
+		}
+	}
 	override fun initialise() {
 		iterator = commands.iterator()
-		if (iterator?.hasNext() == true) initQueue.add(iterator!!.next())
+		advance()
 	}
 
 	override fun finished(): Boolean {
-		return !iterator!!.hasNext() && super.finished()
+		return iterator?.hasNext() != true && super.finished()
 	}
 
 	override fun end(interrupted: Boolean) {
@@ -31,7 +37,7 @@ class AdvancingGroup(commands: Iterable<Command>) : CommandGroup() {
 	}
 
 	override fun schedule() {
-		if (iterator?.hasNext() == true) initQueue.add(iterator!!.next())
+		advance()
 		super.schedule()
 	}
 }

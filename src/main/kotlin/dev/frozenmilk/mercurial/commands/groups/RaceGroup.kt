@@ -2,11 +2,13 @@ package dev.frozenmilk.mercurial.commands.groups
 
 import dev.frozenmilk.mercurial.commands.Command
 
-class RaceGroup @JvmOverloads constructor(val deadline: Command? = null, commands: Collection<Command>) : ParallelGroup(commands) {
+/**
+ * [deadline] should not also be in [commands]
+ */
+class RaceGroup @JvmOverloads constructor(val deadline: Command? = null, commands: Collection<Command>) : ParallelGroup(if (deadline != null) commands.plus(deadline) else commands) {
 	@JvmOverloads constructor(deadline: Command? = null, vararg commands: Command) : this(deadline, commands.toList())
 
 	override fun initialise() {
-		if (deadline != null && !commands.contains(deadline)) throw IllegalStateException("RaceGroup must contain its deadline command")
 		super.initialise()
 	}
 	/**
