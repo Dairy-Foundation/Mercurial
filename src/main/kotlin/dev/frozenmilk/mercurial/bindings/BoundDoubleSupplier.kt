@@ -9,10 +9,6 @@ import java.util.function.Supplier
 
 class BoundDoubleSupplier(private val numberSupplier: IEnhancedNumericSupplier<Double>) : EnhancedComparableNumericSupplier<Double, BoundConditional<Double>> {
 	constructor(supplier: Supplier<Double>) : this(EnhancedDoubleSupplier(supplier))
-	override val supplier
-		get() = numberSupplier.supplier
-	override val modifier
-		get() = numberSupplier.modifier
 	override var position
 		get() = numberSupplier.position
 		set(value) {
@@ -48,9 +44,6 @@ class BoundDoubleSupplier(private val numberSupplier: IEnhancedNumericSupplier<D
 	override fun findErrorRawVelocity(target: Double) = numberSupplier.findErrorRawVelocity(target)
 	override fun findErrorVelocity(target: Double) = numberSupplier.findErrorVelocity(target)
 	override fun findErrorPosition(target: Double) = numberSupplier.findErrorPosition(target)
-	override val dependency
-		get() = numberSupplier.dependency
-
 	override fun conditionalBindPosition() = BoundConditional(this::position)
 	override fun conditionalBindVelocity() = BoundConditional(this::velocity)
 	override fun conditionalBindVelocityRaw() = BoundConditional(this::rawVelocity)
