@@ -7,14 +7,14 @@ import org.firstinspires.ftc.robotcore.external.Telemetry
 @Suppress("unused")
 abstract class SDKSubsystem : Subsystem {
 	private val hardwareMapCell: SubsystemObjectCell<HardwareMap> by lazy {
-		SubsystemObjectCell(this) {
+		subsystemCell {
 			FeatureRegistrar.activeOpMode.hardwareMap
 		}
 	}
 	protected val hardwareMap by hardwareMapCell
 
 	private val telemetryCell: SubsystemObjectCell<Telemetry> by lazy {
-		SubsystemObjectCell(this) {
+		subsystemCell {
 			FeatureRegistrar.activeOpMode.telemetry
 		}
 	}
