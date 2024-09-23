@@ -2,7 +2,10 @@ package dev.frozenmilk.mercurial.commands
 
 import dev.frozenmilk.dairy.core.wrapper.Wrapper.OpModeState
 import dev.frozenmilk.mercurial.Mercurial
-import dev.frozenmilk.mercurial.subsystems.Subsystem
+import dev.frozenmilk.mercurial.commands.groups.Parallel
+import dev.frozenmilk.mercurial.commands.groups.Race
+import dev.frozenmilk.mercurial.commands.groups.Sequential
+import dev.frozenmilk.mercurial.commands.util.Wait
 
 interface Command {
 	/**
@@ -32,7 +35,7 @@ interface Command {
 	 *
 	 * this should not change
 	 */
-	val requiredSubsystems: Set<Subsystem>
+	val requirements: Set<Any>
 
 	/**
 	 * the set of OpMode [OpModeState]s during which this command is allowed to start, being in an invalid [OpModeState] does not prematurely finish a command
@@ -61,5 +64,23 @@ interface Command {
 		if (Mercurial.isScheduled(this)) Mercurial.cancelCommand(this)
 	}
 
-	fun intoLambdaCommand(): LambdaCommand = LambdaCommand.from(this)
+	fun with(vararg commands: Command): Command = Parallel(this, *commands)
+	fun timeout(duration: Double): Command = Race(deadline = Wait(duration), this)
+	fun raceWith(vararg commands: Command): Command = Race(deadline = null, this, *commands)
+	fun asDeadline(vararg commands: Command): Command = Race(deadline = this, *commands)
+	fun then(vararg commands: Command): Command = Sequential(this, *commands)
+
+	fun unwindStackTrace(command: Command, sub: String): String = if (command == this) sub else this.toString()
+	override fun toString(): String
+}
+
+/**
+ * splits at capital letters
+ */
+val CAPITAL_SPLIT = Regex("(?=\\p{Lu})")
+fun rename(commandName: String) : String {
+	if (commandName.isBlank()) throw IllegalArgumentException("cannot have a blank command name")
+	val trimmed = commandName.trim()
+	return if (trimmed[0] == '\\' && trimmed.length != 1) trimmed.drop(1)
+	else trimmed.split(CAPITAL_SPLIT).filter { it.isNotBlank() }.joinToString(separator = "-") { it.lowercase() }
 }

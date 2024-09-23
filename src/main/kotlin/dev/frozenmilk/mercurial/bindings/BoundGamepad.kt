@@ -3,9 +3,11 @@ package dev.frozenmilk.mercurial.bindings
 import dev.frozenmilk.dairy.core.util.supplier.logical.EnhancedBooleanSupplier
 import dev.frozenmilk.dairy.core.util.supplier.numeric.EnhancedDoubleSupplier
 import dev.frozenmilk.dairy.pasteurized.PasteurizedGamepad
+import dev.frozenmilk.util.modifier.Modifier
 
 @Suppress("INAPPLICABLE_JVM_NAME")
 class BoundGamepad(gamepad: PasteurizedGamepad<EnhancedDoubleSupplier, EnhancedBooleanSupplier>) : PasteurizedGamepad<BoundDoubleSupplier, BoundBooleanSupplier> {
+	override fun convert(n: BoundDoubleSupplier, modifier: Modifier<Double>) = BoundDoubleSupplier { modifier.modify(n.state) }
 	/**
 	 * left analog stick horizontal axis
 	 */

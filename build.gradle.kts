@@ -39,33 +39,45 @@ android {
 dependencies {
 	//noinspection GradleDependency
 	implementation("androidx.appcompat:appcompat:1.2.0")
-	testImplementation("org.testng:testng:6.9.6")
+	//testImplementation("org.testng:testng:6.9.6")
+	testImplementation(testFixtures(project(":Core")))
 
 	compileOnly(project(":Core"))
-	compileOnly(project(":Pasteurized"))
-	implementation(project(":Sinister"))
+	api(project(":Pasteurized"))
 
-	compileOnly("org.firstinspires.ftc:RobotCore:9.1.0")
-	compileOnly("org.firstinspires.ftc:Hardware:9.1.0")
-	compileOnly("org.firstinspires.ftc:FtcCommon:9.1.0")
+	compileOnly("org.firstinspires.ftc:RobotCore:10.0.0")
+	compileOnly("org.firstinspires.ftc:Hardware:10.0.0")
+	compileOnly("org.firstinspires.ftc:FtcCommon:10.0.0")
 }
 
 publishing {
+	repositories {
+		maven {
+			name = "Dairy"
+			url = uri("https://repo.dairy.foundation/releases")
+			credentials(PasswordCredentials::class)
+			authentication {
+				create<BasicAuthentication>("basic")
+			}
+		}
+		maven {
+			name = "DairySNAPSHOT"
+			url = uri("https://repo.dairy.foundation/snapshots")
+			credentials(PasswordCredentials::class)
+			authentication {
+				create<BasicAuthentication>("basic")
+			}
+		}
+	}
 	publications {
 		register<MavenPublication>("release") {
 			groupId = "dev.frozenmilk.mercurial"
 			artifactId = "Mercurial"
-			version = "v0.0.0"
+			version = "0.0.0-SNAPSHOT"
 
 			afterEvaluate {
 				from(components["release"])
 			}
-		}
-	}
-	repositories {
-		maven {
-			name = "Mercurial"
-			url = uri("${project.buildDir}/release")
 		}
 	}
 }

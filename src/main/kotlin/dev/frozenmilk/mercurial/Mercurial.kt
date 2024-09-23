@@ -1,15 +1,16 @@
 package dev.frozenmilk.mercurial
 
 import dev.frozenmilk.dairy.core.Feature
+import dev.frozenmilk.dairy.core.dependency.Dependency
 import dev.frozenmilk.dairy.core.dependency.annotation.SingleAnnotation
 import dev.frozenmilk.dairy.core.wrapper.Wrapper
 import dev.frozenmilk.dairy.core.wrapper.Wrapper.OpModeState
 import dev.frozenmilk.dairy.pasteurized.Pasteurized
 import dev.frozenmilk.mercurial.bindings.Binding
 import dev.frozenmilk.mercurial.bindings.BoundGamepad
-import dev.frozenmilk.mercurial.collections.emptyMutableWeakRefSet
 import dev.frozenmilk.mercurial.commands.Command
-import dev.frozenmilk.mercurial.subsystems.Subsystem
+import dev.frozenmilk.mercurial.commands.MercurialException
+import dev.frozenmilk.mercurial.commands.UnwindCommandStack
 import dev.frozenmilk.util.cell.LazyCell
 import java.lang.annotation.Inherited
 import java.util.Collections
@@ -22,7 +23,7 @@ object Mercurial : Feature {
 	//
 	// Dependencies
 	//
-	override val dependency = SingleAnnotation(Attach::class.java)
+	override var dependency: Dependency<*> = SingleAnnotation(Attach::class.java)
 
 	//
 	// Fields
@@ -43,57 +44,38 @@ object Mercurial : Feature {
 	// Internal
 	private val toSchedule = mutableListOf<Command>()
 	private val toEnd = mutableListOf<Pair<Boolean, Command>>()
-	private val subsystems = mutableSetOf<Subsystem>()
-	private val enabledSubsystems = mutableSetOf<Subsystem>()
-	private val requirementMap = WeakHashMap<Subsystem, Command>()
-	private val defaultCommandMap = HashMap<Subsystem, Command?>()
-	private val bindings = emptyMutableWeakRefSet<Binding>()
+	private val requirementMap = WeakHashMap<Any, Command>()
+	private val defaultCommandMap = HashMap<Any, Command>()
+	private val activeCommands = mutableListOf<Command>()
+	private val bindings = mutableSetOf<Binding>()
 
 	//
 	// External Functions
 	//
 
-	/**
-	 * registers the subsystem, so that the Scheduler knows it exists, probably doesn't need to be called by hand
-	 */
 	@JvmStatic
-	fun registerSubsystem(subsystem: Subsystem) = subsystems.add(subsystem)
-
-	/**
-	 * @see registerSubsystem
-	 */
-	@JvmStatic
-	fun deregisterSubsystem(subsystem: Subsystem) {
-		subsystems.remove(subsystem)
+	fun setDefaultCommand(requirement: Any, command: Command?) {
+		if (command == null) defaultCommandMap.remove(requirement)
+		else defaultCommandMap[requirement] = command
 	}
 
 	@JvmStatic
-	fun setDefaultCommand(subsystem: Subsystem, command: Command?) {
-		defaultCommandMap[subsystem] = command
-	}
-
-	@JvmStatic
-	fun getDefaultCommand(subsystem: Subsystem): Command? {
-		return defaultCommandMap[subsystem]
+	fun getDefaultCommand(requirement: Any): Command? {
+		return defaultCommandMap[requirement]
 	}
 
 	@JvmStatic
 	fun isScheduled(command: Command): Boolean {
-		return requirementMap.containsValue(command)
+		return activeCommands.contains(command)
 	}
 
-	@JvmStatic
-	fun scheduleCommand(command: Command) {
+	internal fun scheduleCommand(command: Command) {
 		toSchedule.add(command)
 	}
 
-	@JvmStatic
-	fun cancelCommand(command: Command) {
+	internal fun cancelCommand(command: Command) {
 		toEnd.add(true to command)
 	}
-
-	@JvmStatic
-	fun isActive(subsystem: Subsystem) = enabledSubsystems.contains(subsystem)
 
 	//
 	// Internal Functions
@@ -106,9 +88,21 @@ object Mercurial : Feature {
 	private fun clearToEnd() {
 		toEnd.forEach { (interrupted, command) ->
 			if (!isScheduled(command)) return@forEach
-			command.end(interrupted)
-			for (requirement in command.requiredSubsystems) {
-				requirementMap.remove(requirement, command)
+			try {
+				command.end(interrupted)
+			}
+			catch (e: Throwable) {
+				if (e !is UnwindCommandStack) throw MercurialException("exception thrown in end:\n${command.toString().trim()}", e)
+				else throw MercurialException("exception thrown in ${e.phase}:\n" +
+											"caused by: ${e.causeCommand}\n" +
+											"cause is marked as 'ERR' in this command s-expr\n" +
+											e.message, e.cause)
+			}
+			finally {
+				for (requirement in command.requirements) {
+					requirementMap.remove(requirement, command)
+				}
+				activeCommands.remove(command)
 			}
 		}
 
@@ -116,19 +110,17 @@ object Mercurial : Feature {
 	}
 
 	private fun clearToSchedule(state: OpModeState) {
-		var i = 0
-		while (i < toSchedule.size) {
-			val command = toSchedule[i]
+		for (command in toSchedule) {
 			if (!command.runStates.contains(state)) continue
 
 			// if the subsystems required by the command are not required, register it
-			if (Collections.disjoint(command.requiredSubsystems, requirementMap.keys)) {
-				initialiseCommand(command, command.requiredSubsystems)
+			if (Collections.disjoint(command.requirements, requirementMap.keys)) {
+				initialiseCommand(command, command.requirements)
 				continue
 			}
 			else {
 				// for each subsystem required, check the command currently requiring it, and make sure that they can all be overwritten
-				for (subsystem in command.requiredSubsystems) {
+				for (subsystem in command.requirements) {
 					val requirer: Command? = requirementMap[subsystem]
 					if (requirer != null && !requirer.interruptible) {
 						continue
@@ -137,37 +129,63 @@ object Mercurial : Feature {
 			}
 
 			// cancel all required commands
-			command.requiredSubsystems.forEach {
+			command.requirements.forEach {
 				val requiringCommand = requirementMap[it]
 				if(requiringCommand != null) { toEnd.add(true to requiringCommand) }
 			}
-			i += 1
 		}
 
 		toSchedule.clear()
 	}
 
-	private fun initialiseCommand(command: Command, commandRequirements: Set<Subsystem>) {
+	private fun initialiseCommand(command: Command, commandRequirements: Set<Any>) {
 		for (requirement in commandRequirements) {
 			requirementMap[requirement] = command
 		}
-		command.initialise()
+		activeCommands.add(command)
+		try {
+			command.initialise()
+		}
+		catch (e: Throwable) {
+			for (requirement in command.requirements) {
+				requirementMap.remove(requirement, command)
+			}
+			activeCommands.remove(command)
+			if (e !is UnwindCommandStack) throw MercurialException("exception thrown in initialise:\n${command.toString().trim()}", e)
+			else throw MercurialException("exception thrown in ${e.phase}:\n" +
+										"caused by: ${e.causeCommand}\n" +
+										"cause is marked as 'ERR' in this command s-expr\n" +
+										e.message, e.cause)
+		}
 	}
 
 	private fun resolveSchedulerUpdate(runState: OpModeState) {
 		// checks to see if any commands are finished, if so, cancels them
-		requirementMap.values.forEach {
-			if (it.finished()) toEnd.add(false to it)
+		activeCommands.forEach { command ->
+			try {
+				if (command.finished()) toEnd.add(false to command)
+			}
+			catch (e: Throwable) {
+				for (requirement in command.requirements) {
+					requirementMap.remove(requirement, command)
+				}
+				activeCommands.remove(command)
+				if (e !is UnwindCommandStack) throw MercurialException("exception thrown in finished?:\n${command.toString().trim()}", e)
+				else throw MercurialException("exception thrown in ${e.phase}:\n" +
+						"caused by: ${e.causeCommand}\n" +
+						"cause is marked as 'ERR' in this command s-expr\n" +
+						e.message, e.cause)
+			}
 		}
 
 		// cancel the commands
 		clearToEnd()
 
 		// schedule any default commands that can be scheduled
-		val incomingRequirements = toSchedule.flatMap { it.requiredSubsystems }.toSet() // try our hardest not to schedule default commands that have something coming in
-		enabledSubsystems.forEach {
-			if (requirementMap[it] == null && !incomingRequirements.contains(it)) {
-				defaultCommandMap[it]?.schedule()
+		val incomingRequirements = toSchedule.flatMap { it.requirements }.toSet() // try our hardest not to schedule default commands that have something coming in
+		defaultCommandMap.forEach { (requirement, command) ->
+			if (requirementMap[requirement] == null && !incomingRequirements.contains(requirement)) {
+				command.schedule()
 			}
 		}
 
@@ -178,7 +196,22 @@ object Mercurial : Feature {
 		clearToEnd()
 
 		// execute commands
-		requirementMap.values.forEach { it.execute() }
+		activeCommands.forEach { command ->
+			try {
+				command.execute()
+			}
+			catch (e: Throwable) {
+				for (requirement in command.requirements) {
+					requirementMap.remove(requirement, command)
+				}
+				activeCommands.remove(command)
+				if (e !is UnwindCommandStack) throw MercurialException("exception thrown in execute:\n${command.toString().trim()}", e)
+				else throw MercurialException("exception thrown in ${e.phase}:\n" +
+											"caused by: ${e.causeCommand}\n" +
+											"cause is marked as 'ERR' in this command s-expr\n" +
+											e.message, e.cause)
+			}
+		}
 	}
 
 	private fun pollBindings() {
@@ -186,20 +219,48 @@ object Mercurial : Feature {
 	}
 
 	//
-	// Hooks
+	// Impl Feature
 	//
-	override fun preUserInitHook(opMode: Wrapper) = subsystems
-				.filter { it.isAttached() }
-				.forEach { enabledSubsystems.add(it) }
 
+	// clears state
+	private fun clearState() {
+		// checks to see if any commands are finished, if so, cancels them
+		activeCommands.forEach { command ->
+			try {
+				if (command.finished()) toEnd.add(false to command)
+			}
+			catch (e: Throwable) {
+				for (requirement in command.requirements) {
+					requirementMap.remove(requirement, command)
+				}
+				activeCommands.remove(command)
+				if (e !is UnwindCommandStack) throw MercurialException("exception thrown in finished?:\n${command.toString().trim()}", e)
+				else throw MercurialException("exception thrown in ${e.phase}:\n" +
+						"caused by: ${e.causeCommand}\n" +
+						"cause is marked as 'ERR' in this command s-expr\n" +
+						e.message, e.cause)
+			}
+		}
+		clearToEnd()
+		activeCommands.forEach { toEnd.add(true to it) }
+		clearToEnd()
+		toSchedule.clear()
+		requirementMap.clear()
+		defaultCommandMap.clear()
+		activeCommands.clear()
+		bindings.clear()
+	}
+
+	//override fun preUserInitHook(opMode: Wrapper) = clearState()
+	override fun postUserInitHook(opMode: Wrapper) = resolveSchedulerUpdate(opMode.state)
 	override fun preUserInitLoopHook(opMode: Wrapper) = pollBindings()
 	override fun postUserInitLoopHook(opMode: Wrapper) = resolveSchedulerUpdate(opMode.state)
+	override fun preUserStartHook(opMode: Wrapper) = pollBindings()
+	override fun postUserStartHook(opMode: Wrapper) = resolveSchedulerUpdate(opMode.state)
 	override fun preUserLoopHook(opMode: Wrapper) = pollBindings()
 	override fun postUserLoopHook(opMode: Wrapper) = resolveSchedulerUpdate(opMode.state)
-	override fun postUserStopHook(opMode: Wrapper) {
-		bindings.clear()
-		// de-init all subsystems
-		enabledSubsystems.clear()
+	override fun cleanup(opMode: Wrapper) {
+		clearState()
 		// invalidate gamepads
 		gamepad1Cell.invalidate()
 		gamepad2Cell.invalidate()

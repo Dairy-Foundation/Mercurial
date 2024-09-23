@@ -2,12 +2,11 @@ package dev.frozenmilk.mercurial.commands.util
 
 import dev.frozenmilk.dairy.core.wrapper.Wrapper
 import dev.frozenmilk.mercurial.commands.Command
-import dev.frozenmilk.mercurial.subsystems.Subsystem
 
 /**
  * a command that waits for the specified [duration], in seconds
  */
-class WaitCommand(val duration: Double) : Command {
+class Wait(val duration: Double) : Command {
 	var startTime = 0L
 		private set
 	override fun initialise() {
@@ -24,6 +23,7 @@ class WaitCommand(val duration: Double) : Command {
 		return (System.nanoTime() - startTime) / 1E9 >= duration
 	}
 
-	override val requiredSubsystems: Set<Subsystem> = emptySet()
+	override val requirements: Set<Any> = emptySet()
 	override val runStates: Set<Wrapper.OpModeState> = setOf(Wrapper.OpModeState.INIT, Wrapper.OpModeState.ACTIVE)
+	override fun toString() = "(wait $duration)"
 }

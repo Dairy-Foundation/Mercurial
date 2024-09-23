@@ -2,6 +2,7 @@ package dev.frozenmilk.mercurial.subsystems
 
 import dev.frozenmilk.dairy.core.Feature
 import dev.frozenmilk.dairy.core.FeatureRegistrar
+import dev.frozenmilk.dairy.core.dependency.Dependency
 import dev.frozenmilk.dairy.core.dependency.feature.AllFeatures
 import dev.frozenmilk.dairy.core.wrapper.Wrapper
 import dev.frozenmilk.mercurial.Mercurial
@@ -20,22 +21,25 @@ import java.util.function.Supplier
  *
  * @see dev.frozenmilk.dairy.core.util.OpModeLazyCell for use in an op mode
  */
-class SubsystemObjectCell<T>(val subsystem: Subsystem, supplier: Supplier<T>) : LazyCell<T>(supplier), Feature {
-	override val dependency = AllFeatures(Mercurial, subsystem)
+class SubsystemObjectCell<T>(val subsystem: Feature, supplier: Supplier<T>) : LazyCell<T>(supplier), Feature {
+	override var dependency: Dependency<*> = AllFeatures(Mercurial, subsystem)
 
 	init {
 		FeatureRegistrar.registerFeature(this)
 	}
 
 	override fun get(): T {
-		if (!initialised()) {
-			if (!FeatureRegistrar.opModeActive) throw IllegalStateException("Attempted to evaluate contents of SubsystemObjectCell while no opmode active")
-			if (!isAttached()) throw IllegalStateException("Attempted to evaluate contents of SubsystemObjectCell without Mercurial or required subsystem ($subsystem) attached")
+		if (!initialised) {
+			if (!FeatureRegistrar.opModeRunning) throw IllegalStateException("Attempted to evaluate contents of SubsystemObjectCell while no opmode active")
+			if (!active) throw IllegalStateException("Attempted to evaluate contents of SubsystemObjectCell without Mercurial or required subsystem ($subsystem) attached")
 		}
 		return super.get()
 	}
 	override fun postUserInitHook(opMode: Wrapper) {
+		safeEvaluate()
+	}
+
+	override fun cleanup(opMode: Wrapper) {
 		invalidate()
-		get()
 	}
 }
