@@ -39,7 +39,6 @@ android {
 dependencies {
 	//noinspection GradleDependency
 	implementation("androidx.appcompat:appcompat:1.2.0")
-	//testImplementation("org.testng:testng:6.9.6")
 	testImplementation(testFixtures(project(":Core")))
 
 	compileOnly(project(":Core"))
@@ -73,7 +72,7 @@ publishing {
 		register<MavenPublication>("release") {
 			groupId = "dev.frozenmilk.mercurial"
 			artifactId = "Mercurial"
-			version = "0.0.0-SNAPSHOT"
+			version = "1.0.0"
 
 			afterEvaluate {
 				from(components["release"])
