@@ -37,6 +37,9 @@ class SubsystemObjectCell<T>(val subsystem: Feature, supplier: Supplier<T>) : La
 	}
 	override fun postUserInitHook(opMode: Wrapper) {
 		safeEvaluate()
+		if (opMode.getState() == Wrapper.OpModeState.STOPPED) {
+			invalidate()
+		}
 	}
 
 	override fun cleanup(opMode: Wrapper) {
