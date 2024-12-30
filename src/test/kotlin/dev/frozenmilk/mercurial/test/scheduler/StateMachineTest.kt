@@ -13,38 +13,40 @@ import org.junit.runner.RunWith
 @RunWith(OpModeTestRunner::class)
 abstract class StateMachineTest : EventSequenceCommandTest() {
 	companion object {
-		fun Command.testMember(stateCell: RefCell<Int>, currentCommandCell: LateInitCell<String>) =
-			Lambda.from(this)
-				.addInit {
-					Assert.assertTrue(!currentCommandCell.initialised)
-					currentCommandCell.accept(this.toString())
-				}
-				.addExecute {
-					Assert.assertEquals(toString(), currentCommandCell.get())
-				}
-				.addEnd {
-					Assert.assertEquals(toString(), currentCommandCell.get())
-					currentCommandCell.invalidate()
-					stateCell.accept(stateCell.get() + 1)
-				}
+		fun Command.testMember(stateCell: RefCell<Int>, currentCommandCell: LateInitCell<Any>) =
+			run {
+				Lambda.from(this)
+					.addInit {
+						Assert.assertTrue(!currentCommandCell.initialised)
+						currentCommandCell.accept(this)
+					}
+					.addExecute {
+						Assert.assertEquals(this, currentCommandCell.get())
+					}
+					.addEnd {
+						Assert.assertEquals(this, currentCommandCell.get())
+						currentCommandCell.invalidate()
+						stateCell.accept(stateCell.get() + 1)
+					}
+			}
 
-		fun Command.lastMember(currentCommandCell: LateInitCell<String>) =
+		fun Command.lastMember(currentCommandCell: LateInitCell<Any>) =
 			Lambda.from(this)
 				.addInit {
 					Assert.assertTrue(!currentCommandCell.initialised)
-					currentCommandCell.accept(this.toString())
+					currentCommandCell.accept(this)
 				}
 				.addExecute {
-					Assert.assertEquals(toString(), currentCommandCell.get())
+					Assert.assertEquals(this, currentCommandCell.get())
 				}
 				.addEnd {
-					Assert.assertEquals(toString(), currentCommandCell.get())
+					Assert.assertEquals(this, currentCommandCell.get())
 					currentCommandCell.invalidate()
 				}
 
 		fun nestedStateMachineTest(vararg commands: Command): StateMachine<Int> {
 			Assert.assertTrue(commands.isNotEmpty())
-			val state = LateInitCell<String>()
+			val state = LateInitCell<Any>()
 			return StateMachine(0).run {
 				commands.foldIndexed(this) { i, stateMachine, command ->
 					stateMachine.withState(i) { stateRef, _ ->
@@ -56,7 +58,7 @@ abstract class StateMachineTest : EventSequenceCommandTest() {
 		}
 		fun TestOpMode.stateMachineTest(vararg commands: Command): StateMachine<Int> {
 			Assert.assertTrue(commands.isNotEmpty())
-			val state = LateInitCell<String>()
+			val state = LateInitCell<Any>()
 			return StateMachine(0).run {
 				commands.foldIndexed(this) { i, stateMachine, command ->
 					stateMachine.withState(i) { stateRef, _ ->
