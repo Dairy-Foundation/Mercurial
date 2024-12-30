@@ -72,7 +72,7 @@ object Mercurial : Feature {
 
 	@JvmStatic
 	fun isScheduled(command: Command): Boolean {
-		return activeCommands.contains(command)
+		return activeCommands.contains(command) || toSchedule.contains(command)
 	}
 
 	internal fun scheduleCommand(command: Command) {
@@ -92,23 +92,30 @@ object Mercurial : Feature {
 	}
 
 	private fun clearToEnd() {
-		toEnd.forEach { (interrupted, command) ->
-			if (!isScheduled(command)) return@forEach
+		var i = 0
+		while (i < toEnd.size) {
 			try {
-				command.end(interrupted)
-			}
-			catch (e: Throwable) {
-				if (e !is UnwindCommandStack) throw MercurialException("exception thrown in end:\n${command.toString().trim()}", e)
-				else throw MercurialException("exception thrown in ${e.phase}:\n" +
-											"caused by: ${e.causeCommand}\n" +
-											"cause is marked as 'ERR' in this command s-expr\n" +
-											e.message, e.cause)
+				val (interrupted, command) = toEnd[i]
+				if (!isScheduled(command)) continue
+				try {
+					command.end(interrupted)
+				}
+				catch (e: Throwable) {
+					if (e !is UnwindCommandStack) throw MercurialException("exception thrown in end:\n${command.toString().trim()}", e)
+					else throw MercurialException("exception thrown in ${e.phase}:\n" +
+							"caused by: ${e.causeCommand}\n" +
+							"cause is marked as 'ERR' in this command s-expr\n" +
+							e.message, e.cause)
+				}
+				finally {
+					for (requirement in command.requirements) {
+						requirementMap.remove(requirement, command)
+					}
+					activeCommands.remove(command)
+				}
 			}
 			finally {
-				for (requirement in command.requirements) {
-					requirementMap.remove(requirement, command)
-				}
-				activeCommands.remove(command)
+				i++
 			}
 		}
 
@@ -116,28 +123,35 @@ object Mercurial : Feature {
 	}
 
 	private fun clearToSchedule(state: OpModeState) {
-		for (command in toSchedule) {
-			if (!command.runStates.contains(state)) continue
+		var i = 0
+		while (i < toSchedule.size) {
+			try {
+				val command = toSchedule[i]
+				if (!command.runStates.contains(state)) continue
 
-			// if the subsystems required by the command are not required, register it
-			if (Collections.disjoint(command.requirements, requirementMap.keys)) {
-				initialiseCommand(command, command.requirements)
-				continue
-			}
-			else {
-				// for each subsystem required, check the command currently requiring it, and make sure that they can all be overwritten
-				for (subsystem in command.requirements) {
-					val requirer: Command? = requirementMap[subsystem]
-					if (requirer != null && !requirer.interruptible) {
-						continue
+				// if the subsystems required by the command are not required, register it
+				if (Collections.disjoint(command.requirements, requirementMap.keys)) {
+					initialiseCommand(command, command.requirements)
+					continue
+				}
+				else {
+					// for each subsystem required, check the command currently requiring it, and make sure that they can all be overwritten
+					for (subsystem in command.requirements) {
+						val requirer: Command? = requirementMap[subsystem]
+						if (requirer != null && !requirer.interruptible) {
+							continue
+						}
 					}
 				}
-			}
 
-			// cancel all required commands
-			command.requirements.forEach {
-				val requiringCommand = requirementMap[it]
-				if(requiringCommand != null) { toEnd.add(true to requiringCommand) }
+				// cancel all required commands
+				command.requirements.forEach {
+					val requiringCommand = requirementMap[it]
+					if(requiringCommand != null) { toEnd.add(true to requiringCommand) }
+				}
+			}
+			finally {
+				i++
 			}
 		}
 
