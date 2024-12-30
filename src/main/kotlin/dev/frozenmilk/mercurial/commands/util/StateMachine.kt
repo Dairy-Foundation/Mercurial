@@ -76,7 +76,7 @@ class StateMachine<T: Any> private constructor(private val stateCell: RefCell<T>
 		map.values.flatMap { it.runStates }.toSet()
 	}
 	override val interruptible: Boolean
-		get() = currentCommandCell.safeInvoke { it.interruptible } ?: true
+		get() = currentCommandCell.safeInvoke { it.interruptible } != false
 
 	fun schedule(state: T) {
 		this.state = state
