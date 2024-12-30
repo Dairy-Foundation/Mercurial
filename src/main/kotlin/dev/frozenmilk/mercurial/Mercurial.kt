@@ -41,6 +41,12 @@ object Mercurial : Feature {
 	@set:JvmName("gamepad2")
 	var gamepad2: BoundGamepad by gamepad2Cell
 
+	/**
+	 * returns a snapshot of the currently active commands
+	 */
+	val activeCommandSnapshot
+		get() = activeCommands.toList()
+
 	// Internal
 	private val toSchedule = mutableListOf<Command>()
 	private val toEnd = mutableListOf<Pair<Boolean, Command>>()
