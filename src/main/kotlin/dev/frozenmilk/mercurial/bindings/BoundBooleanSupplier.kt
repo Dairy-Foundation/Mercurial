@@ -255,22 +255,18 @@ class BoundBooleanSupplier private constructor(private val booleanSupplier: Bool
 		return this
 	}
 	/**
-	 * registers [toRun] to be triggered when this condition is true, and ends it early if it becomes false
-	 *
-	 * @see EnhancedBooleanSupplier.toggleTrue
+	 * registers [toRun] to be triggered when [EnhancedBooleanSupplier.toggleTrue] becomes true, and ends it early if it becomes false
 	 */
 	fun toggleTrue(toRun: Command): BoundBooleanSupplier {
-		Binding.runCommand(this::toggleTrue, Lambda.from(toRun).addFinish { it || toggleFalse })
+		Binding.runCommand(this::toggleTrue, Lambda.from(toRun).addFinish { it || !toggleTrue })
 		return this
 	}
 
 	/**
-	 * registers [toRun] to be triggered when this condition is false, and ends it early if it becomes true
-	 *
-	 * @see EnhancedBooleanSupplier.toggleTrue
+	 * registers [toRun] to be triggered when [EnhancedBooleanSupplier.toggleFalse] becomes true, and ends it early if it becomes false
 	 */
 	fun toggleFalse(toRun: Command): BoundBooleanSupplier {
-		Binding.runCommand(this::toggleFalse, Lambda.from(toRun).addFinish { it || toggleTrue })
+		Binding.runCommand(this::toggleFalse, Lambda.from(toRun).addFinish { it || !toggleFalse })
 		return this
 	}
 }
