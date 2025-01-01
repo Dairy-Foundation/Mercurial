@@ -227,7 +227,7 @@ class BoundBooleanSupplier private constructor(private val booleanSupplier: Bool
 	 * registers [toRun] to be triggered when this condition is true, and ends it early if it becomes false
 	 */
 	fun whileTrue(toRun: Command): BoundBooleanSupplier {
-		Binding.runCommand(this::onTrue, Lambda.from(toRun).addFinish { !state })
+		Binding.runCommand(this::onTrue, Lambda.from(toRun).addFinish { it || !state })
 		return this
 	}
 
