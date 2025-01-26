@@ -65,7 +65,7 @@ interface Command {
 	}
 
 	fun with(vararg commands: Command): Command = Parallel(this, *commands)
-	fun timeout(duration: Double): Command = Race(deadline = Wait(duration), this)
+	fun timeout(duration: Double): Command = Race(deadline = null, Wait(duration), this)
 	fun raceWith(vararg commands: Command): Command = Race(deadline = null, this, *commands)
 	fun asDeadline(vararg commands: Command): Command = Race(deadline = this, *commands)
 	fun then(vararg commands: Command): Command = Sequential(this, *commands)
