@@ -37,6 +37,34 @@ class BoundGamepad(gamepad: PasteurizedGamepad<EnhancedDoubleSupplier, EnhancedB
 	override var rightStickY = BoundDoubleSupplier(gamepad.rightStickY)
 
 	/**
+	 * left analog stick horizontal axis absolute value
+	 */
+	@get:JvmName("absoluteLeftStickX")
+	@set:JvmName("absoluteLeftStickX")
+	override var absoluteLeftStickX = BoundDoubleSupplier(Math.abs(gamepad.leftStickX))
+
+	/**
+	 * left analog stick vertical axis absolute value
+	 */
+	@get:JvmName("absoluteLeftStickY")
+	@set:JvmName("absoluteLeftStickY")
+	override var absoluteLeftStickY = BoundDoubleSupplier(Math.abs(gamepad.leftStickY))
+
+	/**
+	 * right analog stick horizontal axis absolute value
+	 */
+	@get:JvmName("absoluteRightStickX")
+	@set:JvmName("absoluteRightStickX")
+	override var absoluteRightStickX = BoundDoubleSupplier(Math.abs(gamepad.rightStickX))
+
+	/**
+	 * right analog stick vertical axis absolute value
+	 */
+	@get:JvmName("absoluteRightStickY")
+	@set:JvmName("absoluteRightStickY")
+	override var absoluteRightStickY = BoundDoubleSupplier(Math.abs(gamepad.rightStickY))
+
+	/**
 	 * dpad up
 	 */
 	@get:JvmName("dpadUp")
