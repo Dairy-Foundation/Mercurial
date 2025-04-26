@@ -1,81 +1,43 @@
 plugins {
-	id("com.android.library")
-	id("kotlin-android")
-	id("org.jetbrains.dokka") version "1.9.10"
-	id("maven-publish")
+	id("dev.frozenmilk.jvm-library") version "10.3.0-0.1.4"
+	id("dev.frozenmilk.publish") version "0.0.5"
+	id("dev.frozenmilk.doc") version "0.0.5"
+	id("dev.frozenmilk.build-meta-data") version "0.0.2"
 }
 
-android {
-	namespace = "dev.frozenmilk.mercurial"
-	compileSdk = 29
-
-	defaultConfig {
-		minSdk = 24
-		//noinspection ExpiredTargetSdkVersion
-		targetSdk = 28
-
-		testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-		consumerProguardFiles("consumer-rules.pro")
-	}
-
-	buildTypes {
-		release {
-			isMinifyEnabled = false
-			proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-		}
-	}
-	compileOptions {
-		sourceCompatibility = JavaVersion.VERSION_1_8
-		targetCompatibility = JavaVersion.VERSION_1_8
-
-		kotlin {
-			compilerOptions {
-				freeCompilerArgs.add("-Xjvm-default=all")
-			}
-		}
+repositories {
+	maven {
+		name = "dairyReleases"
+		url = uri("https://repo.dairy.foundation/releases")
 	}
 }
 
 dependencies {
-	//noinspection GradleDependency
-	implementation("androidx.appcompat:appcompat:1.2.0")
-	testImplementation(testFixtures(project(":Core")))
+	api("dev.frozenmilk.dairy:Util:1.2.0")
+	api("dev.frozenmilk:Sinister:2.2.0")
+}
 
-	compileOnly(project(":Core"))
-	api(project(":Pasteurized"))
-
-	compileOnly("org.firstinspires.ftc:RobotCore:10.0.0")
-	compileOnly("org.firstinspires.ftc:Hardware:10.0.0")
-	compileOnly("org.firstinspires.ftc:FtcCommon:10.0.0")
+meta {
+	packagePath = "dev.frozenmilk.dairy"
+	name = "Mercurial"
+	registerField("name", "String", "\"dev.frozenmilk.dairy.Mercurial\"")
+	registerField("clean", "Boolean") { "${dairyPublishing.clean}" }
+	registerField("gitRef", "String") { "\"${dairyPublishing.gitRef}\"" }
+	registerField("snapshot", "Boolean") { "${dairyPublishing.snapshot}" }
+	registerField("version", "String") { "\"${dairyPublishing.version}\"" }
 }
 
 publishing {
-	repositories {
-		maven {
-			name = "Dairy"
-			url = uri("https://repo.dairy.foundation/releases")
-			credentials(PasswordCredentials::class)
-			authentication {
-				create<BasicAuthentication>("basic")
-			}
-		}
-		maven {
-			name = "DairySNAPSHOT"
-			url = uri("https://repo.dairy.foundation/snapshots")
-			credentials(PasswordCredentials::class)
-			authentication {
-				create<BasicAuthentication>("basic")
-			}
-		}
-	}
 	publications {
 		register<MavenPublication>("release") {
-			groupId = "dev.frozenmilk.mercurial"
+			groupId = "dev.frozenmilk.dairy"
 			artifactId = "Mercurial"
-			version = "1.0.3"
+
+			artifact(dairyDoc.dokkaHtmlJar)
+			artifact(dairyDoc.dokkaJavadocJar)
 
 			afterEvaluate {
-				from(components["release"])
+				from(components["java"])
 			}
 		}
 	}
