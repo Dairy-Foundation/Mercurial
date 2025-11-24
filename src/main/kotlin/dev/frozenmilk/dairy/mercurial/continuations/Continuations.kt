@@ -888,4 +888,81 @@ object Continuations {
         }.close(name, k)
     }
 
+    //
+    // async
+    //
+
+    fun interface AsyncHandle {
+        fun detach(): Closure
+    }
+
+    interface AwaitHandle {
+        fun await(): Closure
+        fun cancel(): Closure
+    }
+
+    private val detachRegister = VarRegister<Unit?>()
+    private var detach by detachRegister
+    private val detachExec = exec { detach = Unit }
+
+    @JvmStatic
+    fun async(
+        scheduler: Supplier<Scheduler>,
+        asyncScope: AsyncHandle.() -> IntoContinuation,
+        awaitScope: AwaitHandle.() -> Closure,
+    ): Closure = run {
+        val asyncK = asyncScope { detachExec }.intoContinuation()
+
+        object : FactoryClosure() {
+            private val fiberRegister = ValRegister<Fiber>()
+            private val fiber by fiberRegister
+            private val await = wait { fiber.state != Fiber.State.ACTIVE }
+            private val cancel = exec { Fiber.CANCEL(fiber) }
+            override fun close(
+                name: String?,
+                k: Continuation,
+            ) = run {
+                val k = sequence(
+                    awaitScope(object : AwaitHandle {
+                        override fun await() = await
+                        override fun cancel() = cancel
+                    }),
+                    exec { Fiber.Registers.DELETE(fiberRegister) },
+                ).close(name, k)
+
+                val inner = Continuation(name ?: "async") { self ->
+                    val fiber = fiber
+                    Fiber.SUBSCHEDULE(fiber)
+                    if (detach != null) {
+                        Fiber.Registers.DELETE(detachRegister)
+                        scheduler.get().schedule(fiber)
+                        k
+                    } else {
+                        val fiber = fiber
+                        Fiber.SUBSCHEDULE(fiber)
+                        if (fiber.state === Fiber.State.FINISHED) {
+                            Fiber.Registers.DELETE(detachRegister)
+                            k
+                        } else self
+                    }
+                }
+
+                Continuation(name ?: "async") {
+                    Fiber.Registers.CREATE(fiberRegister, Fiber(asyncK))
+                    Fiber.Registers.CREATE(detachRegister, null)
+                    inner
+                }
+            }
+        }
+    }
+
+    @JvmStatic
+    fun async(
+        asyncScope: AsyncHandle.() -> IntoContinuation,
+        awaitScope: AwaitHandle.() -> Closure,
+    ) = async(
+        Scheduler::currentScheduler,
+        asyncScope,
+        awaitScope,
+    )
 }
