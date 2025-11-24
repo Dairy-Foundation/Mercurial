@@ -23,11 +23,11 @@ object Actors {
     }
 
     class Actor<STATE, MESSAGE>(
-        name: String,
         initializer: Supplier<STATE>,
         messageHandler: MessageHandler<STATE, MESSAGE>,
         automata: AutomataScopeClosure<STATE>,
     ) : IntoContinuation {
+        @get:JvmName("tx")
         val tx: Sender<MESSAGE>
         private val rx: Receiver<MESSAGE>
 
@@ -74,19 +74,17 @@ object Actors {
                     self
                 }
             }
-        }.close("$name-actor")
+        }.close()
 
         override fun intoContinuation() = k
     }
 
     @JvmStatic
     fun <STATE, MESSAGE> actor(
-        name: String,
         initializer: Supplier<STATE>,
         messageHandler: MessageHandler<STATE, MESSAGE>,
         automata: AutomataScopeClosure<STATE>,
     ) = Actor(
-        name,
         initializer,
         messageHandler,
         automata,
