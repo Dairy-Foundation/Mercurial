@@ -110,7 +110,7 @@ class Fiber(private var k: Continuation) {
 
         private fun popFiber() {
             val cons =
-                checkNotNull(fiberCallstack.get()) { "attempted to pop fiber off an empty callstack" }
+                checkNotNull(fiberCallstack.get()) { "attempted to pop Fiber off an empty callstack" }
             fiberCallstack.set(cons.cdr)
             Cons.drop(cons)
         }
