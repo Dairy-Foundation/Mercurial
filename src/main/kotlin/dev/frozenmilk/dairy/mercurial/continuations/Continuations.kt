@@ -64,18 +64,7 @@ object Continuations {
         )
     }
 
-    fun interface ScopeClosure {
-        fun withEnv(env: Env): Closure
-    }
-
     @JvmStatic
-    fun scope(
-        scopeClosure: ScopeClosure
-    ): Closure {
-        val env = Env()
-        return env.compose(scopeClosure.withEnv(env))
-    }
-
     @OptIn(ExperimentalContracts::class)
     inline fun scope(
         withEnv: Env.() -> Closure
@@ -552,6 +541,7 @@ object Continuations {
     // wait
     //
 
+    @JvmSynthetic
     fun wait(cond: BooleanSupplier): Closure = object : FactoryClosure() {
         override fun close(
             name: String?,
@@ -584,7 +574,7 @@ object Continuations {
 
     private val startTimeRegister = ValRegister<Long>()
 
-    @JvmStatic
+    @JvmSynthetic
     fun wait(clock: Clock, seconds: Double): Closure = scope {
         val duration = clock.convSeconds(seconds)
         val startTime by bind(startTimeRegister, clock::getTime)
@@ -600,7 +590,14 @@ object Continuations {
         }
     }
 
+    @JvmSynthetic
     fun wait(seconds: Double) = wait(Clock.Standard, seconds)
+
+    /**
+     * @see wait
+     */
+    @JvmStatic
+    fun waitSeconds(clock: Clock, seconds: Double) = wait(clock, seconds)
 
     /**
      * @see wait
@@ -864,12 +861,8 @@ object Continuations {
         }
     }
 
-    fun interface JumpScopeClosure {
-        fun bind(jump: JumpHandle): IntoContinuation
-    }
-
     @JvmStatic
-    fun jumpScope(scope: JumpScopeClosure): Closure = object : FactoryClosure() {
+    fun jumpScope(scope: JumpHandle.() -> IntoContinuation): Closure = object : FactoryClosure() {
         private val addressRegister = VarRegister<Continuation?>()
         override fun close(
             name: String?,
@@ -880,7 +873,7 @@ object Continuations {
                 name,
                 k,
             )
-            val process = scope.bind(handle).intoContinuation()
+            val process = scope(handle).intoContinuation()
             val address by bind(addressRegister) { null }
             val fiber by bind(fiberRegister) { Fiber(process) }
             Closure { name, k ->
@@ -894,5 +887,4 @@ object Continuations {
         }.close(name, k)
     }
 
-    fun jumpScope(scope: JumpHandle.() -> Closure) = jumpScope { j -> scope(j) }
 }

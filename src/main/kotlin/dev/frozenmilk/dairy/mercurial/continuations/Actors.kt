@@ -12,7 +12,7 @@ import java.util.function.Supplier
 
 object Actors {
     fun interface AutomataScopeClosure<STATE> {
-        fun withEnv(stateRegister: VarRegister<STATE>): Closure
+        fun bind(stateRegister: VarRegister<STATE>): Closure
     }
 
     fun interface MessageHandler<STATE, MESSAGE> {
@@ -46,11 +46,10 @@ object Actors {
                 scope {
                     automataLocalStateRegister = variable(stateRegister)
                     sequence(
-                        automata.withEnv(automataLocalStateRegister),
+                        automata.bind(automataLocalStateRegister),
                         exec { state = automataLocalStateRegister.get() },
                     )
                 }
-
             ).close()
 
             var automataFiber by variable { Fiber(automata) }

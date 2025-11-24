@@ -12,6 +12,7 @@ class VarRegister<T> : ValRegister<T>(), Consumer<T> {
     fun set(value: T) = Fiber.Registers.SET(this, value)
     fun map(f: Modifier<T>) = Fiber.Registers.MAP(this, f)
     @OptIn(ExperimentalContracts::class)
+    @JvmSynthetic
     inline fun map(f: (T) -> T): T {
         contract {
             callsInPlace(f, InvocationKind.EXACTLY_ONCE)

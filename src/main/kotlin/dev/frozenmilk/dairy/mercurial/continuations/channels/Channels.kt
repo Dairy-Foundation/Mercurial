@@ -14,7 +14,7 @@ import java.util.function.Supplier
 
 object Channels {
     fun interface RecvScopeClosure<T> {
-        fun withMessage(messageRegister: ValRegister<T>): Closure
+        fun bind(messageRegister: ValRegister<T>): Closure
     }
 
     @JvmStatic
@@ -31,7 +31,7 @@ object Channels {
                 k: Continuation,
             ) = run {
                 val to = sequence(
-                    to.withMessage(messageRegister),
+                    to.bind(messageRegister),
                     exec { Fiber.Registers.DELETE(messageRegister) },
                 ).close(name, k)
 
