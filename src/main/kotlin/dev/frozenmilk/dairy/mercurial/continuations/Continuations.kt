@@ -287,16 +287,17 @@ object Continuations {
         )
 
         @Suppress("UNCHECKED_CAST")
-        fun <CASE : T & Any> branch(case: Class<CASE>, closure: TypeMatchedClosure<CASE>) = MatchType(
-            select,
-            register,
-            WeightBalancedTreeMap.add(
-                Ord.HashCode,
-                cases,
-                case,
-                closure,
-            ),
-        )
+        fun <CASE : T & Any> branch(case: Class<CASE>, closure: TypeMatchedClosure<CASE>) =
+            MatchType(
+                select,
+                register,
+                WeightBalancedTreeMap.add(
+                    Ord.HashCode,
+                    cases,
+                    case,
+                    closure,
+                ),
+            )
 
         fun <CASE : T & Any> branch(case: Class<CASE>, closure: Closure) =
             branch(case, UnboundClosure(closure))
@@ -312,7 +313,7 @@ object Continuations {
 
         inline fun <reified CASE : T & Any> branch(closure: Closure) = branch(CASE::class, closure)
 
-        fun nullCase(closure: Closure) = MatchType(
+        fun nullBranch(closure: Closure) = MatchType(
             select,
             register,
             WeightBalancedTreeMap.add(
