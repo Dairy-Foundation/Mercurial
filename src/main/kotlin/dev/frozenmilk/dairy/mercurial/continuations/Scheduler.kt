@@ -1,6 +1,7 @@
 package dev.frozenmilk.dairy.mercurial.continuations
 
 import dev.frozenmilk.util.collections.Cons
+import dev.frozenmilk.util.collections.Q
 import java.util.function.BooleanSupplier
 
 interface Scheduler {
@@ -53,24 +54,31 @@ interface Scheduler {
     }
 
     class Standard : Scheduler {
-        private var fibers: Cons<Fiber>? = null
+        private var collector = Q<Fiber>()
+        private var runner = Q<Fiber>()
+
+        private fun swap() {
+            val tmp = runner
+            runner = collector
+            collector = tmp
+        }
 
         override fun schedule(fiber: Fiber) = run {
-            fibers = Cons.cons(fiber, fibers)
+            collector.append(fiber)
             fiber
         }
 
         fun step() = run {
             pushScheduler(this)
-            fibers = Cons.filter(fibers) { fiber ->
-                if (fiber.state != Fiber.State.ACTIVE) false
-                else {
-                    Fiber.UNRAVEL(fiber)
-                    fiber.state == Fiber.State.ACTIVE
-                }
+            swap()
+            while (!runner.empty()) {
+                val fiber = runner.pop()
+                if (fiber.state != Fiber.State.ACTIVE) continue
+                Fiber.UNRAVEL(fiber)
+                if (fiber.state == Fiber.State.ACTIVE) collector.append(fiber)
             }
             popScheduler()
-            fibers == null
+            collector.empty()
         }
 
         override fun start(cond: BooleanSupplier) {
@@ -78,8 +86,12 @@ interface Scheduler {
         }
 
         override fun shutdown() {
-            Cons.drainForEach(fibers) { fiber ->
-                if (fiber.state == Fiber.State.ACTIVE) Fiber.CANCEL(fiber)
+            while (!runner.empty() && !collector.empty()) {
+                swap()
+                while (!runner.empty()) {
+                    val fiber = runner.pop()
+                    if (fiber.state == Fiber.State.ACTIVE) Fiber.CANCEL(fiber)
+                }
             }
         }
     }
