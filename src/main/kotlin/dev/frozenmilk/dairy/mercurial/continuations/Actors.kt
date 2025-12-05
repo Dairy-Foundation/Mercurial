@@ -10,6 +10,7 @@ import dev.frozenmilk.dairy.mercurial.continuations.channels.Sender
 import dev.frozenmilk.dairy.mercurial.continuations.registers.VarRegister
 import java.util.function.Supplier
 
+@Suppress("UNUSED")
 object Actors {
     fun interface AutomataScopeClosure<STATE> {
         fun bind(stateRegister: VarRegister<STATE>): Closure
@@ -58,7 +59,7 @@ object Actors {
                 override fun close(
                     name: String?,
                     k: Continuation,
-                ) = Continuation(name!!) { self ->
+                ) = Continuation(name ?: "actor") { self ->
                     if (!rx.empty) {
                         val oldState = state
                         val newState = messageHandler.handle(oldState, rx.take())
