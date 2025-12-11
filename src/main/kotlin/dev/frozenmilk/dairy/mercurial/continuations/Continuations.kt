@@ -216,30 +216,25 @@ object Continuations {
         )
 
         fun defaultBranch(closure: Closure): Closure = if (cases == null) closure
-        else object : FactoryClosure() {
-            override fun close(
-                name: String?,
-                k: Continuation,
-            ) = run {
-                val cases = WeightBalancedTreeMap.inorderFold(
+        else Closure { name, k ->
+            val cases = WeightBalancedTreeMap.inorderFold(
+                cases,
+                null as WeightBalancedTreeMap<T, Continuation>?,
+            ) { cases, case, closure ->
+                WeightBalancedTreeMap.add(
+                    ord,
                     cases,
-                    null as WeightBalancedTreeMap<T, Continuation>?,
-                ) { cases, case, closure ->
-                    WeightBalancedTreeMap.add(
-                        ord,
-                        cases,
-                        case,
-                        closure.close(name, k),
-                    )
-                }
-                val default = closure.close(name, k)
-                Continuation(name ?: "match?") {
-                    WeightBalancedTreeMap.get(
-                        ord,
-                        cases,
-                        select.get(),
-                    )?.v ?: default
-                }
+                    case,
+                    closure.close(name, k),
+                )
+            }
+            val default = closure.close(name, k)
+            Continuation(name ?: "match?") {
+                WeightBalancedTreeMap.get(
+                    ord,
+                    cases,
+                    select.get(),
+                )?.v ?: default
             }
         }
 
@@ -334,62 +329,57 @@ object Continuations {
                 exec { Fiber.Registers.DELETE(register) },
             )
         }
-        else object : FactoryClosure() {
-            override fun close(
-                name: String?,
-                k: Continuation,
-            ) = run {
-                val delete = exec { Fiber.Registers.DELETE(register) }
-                val cases = WeightBalancedTreeMap.inorderFold(
+        else Closure { name, k ->
+            val delete = exec { Fiber.Registers.DELETE(register) }
+            val cases = WeightBalancedTreeMap.inorderFold(
+                cases,
+                null as WeightBalancedTreeMap<Class<out T>?, Continuation>?,
+            ) { cases, case, typeMatchedClosure ->
+                WeightBalancedTreeMap.add(
+                    Ord.HashCode,
                     cases,
-                    null as WeightBalancedTreeMap<Class<out T>?, Continuation>?,
-                ) { cases, case, typeMatchedClosure ->
-                    WeightBalancedTreeMap.add(
-                        Ord.HashCode,
-                        cases,
-                        case,
-                        when (typeMatchedClosure) {
-                            is UnboundClosure<*> -> UnboundContinuation(
-                                typeMatchedClosure.closure.close(
-                                    name,
-                                    k,
-                                )
+                    case,
+                    when (typeMatchedClosure) {
+                        is UnboundClosure<*> -> UnboundContinuation(
+                            typeMatchedClosure.closure.close(
+                                name,
+                                k,
                             )
-
-                            else -> sequence(
-                                (typeMatchedClosure as TypeMatchedClosure<T>).bind(register),
-                                delete,
-                            ).close(name, k)
-                        },
-                    )
-                }
-
-                val default = when (closure) {
-                    is UnboundClosure<*> -> UnboundContinuation(
-                        closure.closure.close(
-                            name,
-                            k,
                         )
+
+                        else -> sequence(
+                            (typeMatchedClosure as TypeMatchedClosure<T>).bind(register),
+                            delete,
+                        ).close(name, k)
+                    },
+                )
+            }
+
+            val default = when (closure) {
+                is UnboundClosure<*> -> UnboundContinuation(
+                    closure.closure.close(
+                        name,
+                        k,
                     )
+                )
 
-                    else -> sequence(
-                        closure.bind(register),
-                        delete,
-                    ).close(name, k)
-                }
+                else -> sequence(
+                    closure.bind(register),
+                    delete,
+                ).close(name, k)
+            }
 
-                Continuation(name ?: "match-type?") {
-                    val select = select.get()
+            Continuation(name ?: "match-type?") {
+                val select = select.get()
 
-                    val case = WeightBalancedTreeMap.get(
-                        Ord.HashCode,
-                        cases,
-                        select?.javaClass,
-                    )?.v ?: default
+                val case = WeightBalancedTreeMap.get(
+                    Ord.HashCode,
+                    cases,
+                    select?.javaClass,
+                )?.v ?: default
 
-                    if (case !is UnboundContinuation) Fiber.Registers.CREATE(register, select)
-                    case
-                }
+                if (case !is UnboundContinuation) Fiber.Registers.CREATE(register, select)
+                case
             }
         }
 
