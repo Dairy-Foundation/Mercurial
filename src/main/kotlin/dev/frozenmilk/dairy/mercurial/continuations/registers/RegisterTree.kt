@@ -200,7 +200,7 @@ class RegisterTree<T> private constructor(
             v: T,
             l: RegisterTree<*>,
             r: RegisterTree<*>?,
-        ) = if (single(l.l, l.r)) singleR(k, v, l, r)
+        ) = if (single(l.r, l.l)) singleR(k, v, l, r)
         else doubleR(k, v, l, r)
 
         @Suppress("UNCHECKED_CAST")
