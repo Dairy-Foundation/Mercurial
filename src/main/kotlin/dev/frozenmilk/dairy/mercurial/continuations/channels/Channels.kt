@@ -123,7 +123,9 @@ object Channels {
         var state: Cons<T>? = null
 
         val tx = object : Sender<T> {
-            override val full = state != null
+            override val full
+                get() = state != null
+
             override fun send(value: T) {
                 check(state == null) { "attempted to send to a full channel" }
                 state = Cons.cons(value, null)
@@ -131,7 +133,9 @@ object Channels {
         }
 
         val rx = object : Receiver<T> {
-            override val empty = state == null
+            override val empty
+                get() = state == null
+
             override fun take() =
                 checkNotNull(state) { "attempted to take from an empty channel" }.car
         }
@@ -149,7 +153,9 @@ object Channels {
         }
 
         val rx = object : Receiver<T> {
-            override val empty = state.empty()
+            override val empty
+                get() = state.empty()
+
             override fun take() = state.pop()
         }
 
