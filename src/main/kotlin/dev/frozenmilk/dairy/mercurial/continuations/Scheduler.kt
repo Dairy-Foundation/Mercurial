@@ -51,34 +51,39 @@ interface Scheduler {
         @get:JvmName("currentScheduler")
         val currentScheduler: Scheduler
             get() = checkNotNull(schedulerCallstack.get()) { "attempted to get current Scheduler from empty callstack" }.car
+
+
+        private val SENTINEL_K: Continuation = object : Continuation {
+            override fun apply() = SENTINEL_K
+            override val stackTrace = null
+            override fun toString() = "SENTINEL"
+        }
+
+        @JvmStatic
+        @get:JvmName("SENTINEL")
+        val SENTINEL = Fiber(SENTINEL_K)
     }
 
     class Standard : Scheduler {
-        private var collector = Q<Fiber>()
-        private var runner = Q<Fiber>()
-
-        private fun swap() {
-            val tmp = runner
-            runner = collector
-            collector = tmp
-        }
+        private val q = Q<Fiber>()
 
         override fun schedule(fiber: Fiber) = run {
-            collector.append(fiber)
+            q.append(fiber)
             fiber
         }
 
         fun step() = run {
             pushScheduler(this)
-            swap()
-            while (!runner.empty()) {
-                val fiber = runner.pop()
+            q.append(SENTINEL)
+            while (true) {
+                val fiber = q.pop()
+                if (fiber == SENTINEL) break
                 if (fiber.state != Fiber.State.ACTIVE) continue
                 Fiber.UNRAVEL(fiber)
-                if (fiber.state == Fiber.State.ACTIVE) collector.append(fiber)
+                if (fiber.state == Fiber.State.ACTIVE) q.append(fiber)
             }
             popScheduler()
-            collector.empty()
+            q.empty()
         }
 
         override fun start(cond: BooleanSupplier) {
@@ -86,14 +91,13 @@ interface Scheduler {
         }
 
         override fun shutdown() {
-            while (!runner.empty() && !collector.empty()) {
-                swap()
-                while (!runner.empty()) {
-                    val fiber = runner.pop()
-                    if (fiber.state == Fiber.State.ACTIVE) Fiber.CANCEL(fiber)
-                }
+            while (!q.empty()) {
+                val fiber = q.pop()
+                if (fiber.state == Fiber.State.ACTIVE) Fiber.CANCEL(fiber)
             }
         }
+
+        override fun toString() = q.toString()
     }
 }
 
