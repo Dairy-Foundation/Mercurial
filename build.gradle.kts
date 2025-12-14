@@ -13,7 +13,7 @@ repositories {
 }
 
 dependencies {
-	api("dev.frozenmilk.dairy:Util:1.2.1")
+	api("dev.frozenmilk.dairy:Util:1.2.2")
 	api("dev.frozenmilk:Sinister:2.2.0")
 }
 
