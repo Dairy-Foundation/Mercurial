@@ -33,7 +33,7 @@ object Actors {
         private val rx: Receiver<MESSAGE>
 
         init {
-            val (tx, rx) = Channels.oneshot<MESSAGE>()
+            val (tx, rx) = Channels.single<MESSAGE>()
             this.tx = tx
             this.rx = rx
         }
