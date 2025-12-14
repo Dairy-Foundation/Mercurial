@@ -16,6 +16,8 @@ class Fiber(private var k: Continuation) {
     var state = State.ACTIVE
         private set
 
+    override fun toString() = k.toString()
+
     @Suppress("FunctionName")
     object Registers {
         @PublishedApi
