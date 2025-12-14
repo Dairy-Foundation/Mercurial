@@ -7,7 +7,10 @@ fun interface Closure : IntoContinuation {
     ): Continuation
 
     fun close(name: String?) = close(name, Continuation.halt)
-    fun close() = close(null, Continuation.halt)
+
+    fun close(k: Continuation) = close(null, k)
+
+    fun close() = close(Continuation.halt)
     override fun intoContinuation() = close()
 
     fun named(name: String, fallback: Boolean) = named(this, name, fallback)
