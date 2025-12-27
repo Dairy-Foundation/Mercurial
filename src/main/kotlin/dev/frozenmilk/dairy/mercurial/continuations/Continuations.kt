@@ -111,6 +111,9 @@ object Continuations {
         closures.foldRight(k) { closure, k -> closure.close(name, k) }
     }
 
+    @JvmStatic
+    fun sequence(closures: Collection<Closure>) = sequence(*closures.toTypedArray())
+
     //
     // if?
     //
@@ -499,6 +502,15 @@ object Continuations {
         }
         res
     }
+
+    //
+    // foreach
+    //
+
+    @JvmStatic
+    fun <T> foreach(items: Collection<T>, block: (T) -> Closure) = if (items.isEmpty()) noop()
+    else if (items.size == 1) block(items.first())
+    else sequence(items.map(block))
 
     //
     // panic!
