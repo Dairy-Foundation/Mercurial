@@ -111,6 +111,9 @@ object Continuations {
         closures.foldRight(k) { closure, k -> closure.close(name, k) }
     }
 
+    @JvmStatic
+    fun sequence(closures: Collection<Closure>) = sequence(*closures.toTypedArray())
+
     //
     // if?
     //
