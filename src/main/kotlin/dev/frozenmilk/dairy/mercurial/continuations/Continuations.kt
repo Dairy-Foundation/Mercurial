@@ -7,6 +7,7 @@ import dev.frozenmilk.util.collections.Cons
 import dev.frozenmilk.util.collections.Ord
 import dev.frozenmilk.util.collections.WeightBalancedTreeMap
 import java.util.function.BooleanSupplier
+import java.util.function.Consumer
 import java.util.function.Supplier
 import kotlin.contracts.ExperimentalContracts
 import kotlin.contracts.InvocationKind
@@ -57,11 +58,16 @@ object Continuations {
         }
 
         @PublishedApi
-        internal fun compose(inner: Closure): Closure = sequence(
+        internal fun compose(inner: Closure) = if (registers == null) inner
+        else sequence(
             exec(::CREATE),
             inner,
             exec(::DELETE),
         )
+
+        @PublishedApi
+        internal fun compose(inner: Continuation) = if (registers == null) inner
+        else exec(::CREATE).close(inner)
     }
 
     @JvmStatic
@@ -882,77 +888,66 @@ object Continuations {
     // async
     //
 
-    fun interface AsyncHandle {
-        fun detach(): Closure
+    interface Spawnable {
+        fun spawn(): Fiber
     }
-
-    interface AwaitHandle {
-        fun await(): Closure
-        fun cancel(): Closure
-    }
-
-    private val detachRegister = VarRegister<Unit?>()
-    private var detach by detachRegister
-    private val detachExec = exec { detach = Unit }
 
     @JvmStatic
-    fun async(
+    @OptIn(ExperimentalContracts::class)
+    inline fun async(
         scheduler: Supplier<Scheduler>,
-        asyncScope: AsyncHandle.() -> IntoContinuation,
-        awaitScope: AwaitHandle.() -> Closure,
-    ): Closure = run {
-        val asyncK = asyncScope { detachExec }.intoContinuation()
-
-        object : FactoryClosure() {
-            private val fiberRegister = ValRegister<Fiber>()
-            private val fiber by fiberRegister
-            private val await = wait { fiber.state != Fiber.State.ACTIVE }
-            private val cancel = exec { Fiber.CANCEL(fiber) }
-            override fun close(
-                name: String?,
-                k: Continuation,
-            ) = run {
-                val k = sequence(
-                    awaitScope(object : AwaitHandle {
-                        override fun await() = await
-                        override fun cancel() = cancel
-                    }),
-                    exec { Fiber.Registers.DELETE(fiberRegister) },
-                ).close(name, k)
-
-                val inner = Continuation(name ?: "async") { self ->
-                    val fiber = fiber
-                    Fiber.SUBSCHEDULE(fiber)
-                    if (detach != null) {
-                        Fiber.Registers.DELETE(detachRegister)
-                        scheduler.get().schedule(fiber)
-                        k
-                    } else {
-                        val fiber = fiber
-                        Fiber.SUBSCHEDULE(fiber)
-                        if (fiber.state === Fiber.State.FINISHED) {
-                            Fiber.Registers.DELETE(detachRegister)
-                            k
-                        } else self
-                    }
-                }
-
-                Continuation(name ?: "async") {
-                    Fiber.Registers.CREATE(fiberRegister, Fiber(asyncK))
-                    Fiber.Registers.CREATE(detachRegister, null)
-                    inner
-                }
+        withEnv: Env.() -> IntoContinuation,
+    ): Spawnable {
+        contract {
+            callsInPlace(withEnv, InvocationKind.EXACTLY_ONCE)
+        }
+        val env = Env()
+        val withEnv = withEnv(env).intoContinuation()
+        val inner = env.compose(withEnv)
+        // no registers
+        return if (inner == withEnv) object : Spawnable {
+            override fun spawn() = scheduler.get().schedule(inner)
+        }
+        // registers
+        else object : Spawnable {
+            override fun spawn() = scheduler.get().schedule(inner).also { f ->
+                // run one step on the current callstack, as so to re-scope registers
+                Fiber.SUBSCHEDULE(f)
             }
         }
     }
 
     @JvmStatic
-    fun async(
-        asyncScope: AsyncHandle.() -> IntoContinuation,
-        awaitScope: AwaitHandle.() -> Closure,
-    ) = async(
-        Scheduler::currentScheduler,
-        asyncScope,
-        awaitScope,
-    )
+    @OptIn(ExperimentalContracts::class)
+    inline fun async(
+        withEnv: Env.() -> IntoContinuation,
+    ): Spawnable {
+        contract {
+            callsInPlace(withEnv, InvocationKind.EXACTLY_ONCE)
+        }
+        return async(
+            Scheduler::currentScheduler,
+            withEnv,
+        )
+    }
+
+    @JvmStatic
+    fun spawn(
+        spawnable: Spawnable,
+        register: Consumer<Fiber>,
+    ) = exec { register.accept(spawnable.spawn()) }
+
+    @JvmStatic
+    fun spawn(spawnable: Spawnable) = exec { spawnable.spawn() }
+
+    private val awaitRegister = ValRegister<Fiber>()
+
+    @JvmStatic
+    fun await(register: Supplier<Fiber>) = scope {
+        val fiber by bind(awaitRegister, register)
+        waitUntil { fiber.state != Fiber.State.ACTIVE }
+    }
+
+    @JvmStatic
+    fun cancel(register: Supplier<Fiber>) = exec { Fiber.CANCEL(register.get()) }
 }
