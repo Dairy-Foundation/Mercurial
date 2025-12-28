@@ -122,50 +122,31 @@ class Fiber(private var k: Continuation) {
         val currentFiber: Fiber
             get() = checkNotNull(fiberCallstack.get()) { "attempted to get current Fiber from empty callstack" }.car
 
-        @JvmStatic
-        fun UNRAVEL(fiber: Fiber) {
-            when (fiber.state) {
-                State.ACTIVE -> {
-                    val k = fiber.k
-                    try {
-                        pushFiber(fiber)
-                        fiber.k = fiber.k.apply()
-                        if (fiber.k === Continuation.halt) fiber.state = State.FINISHED
-                    } catch (e: FiberException) {
-                        throw e
-                    } catch (e: Throwable) {
-                        throw FiberException(e, k)
-                    } finally {
-                        popFiber()
-                    }
-                }
-
-                State.FINISHED -> {}
-                State.CANCELLED -> throw IllegalStateException("attempted to UNRAVEL cancelled continuation")
+        private fun unravelInternal(fiber: Fiber) {
+            val k = fiber.k
+            try {
+                pushFiber(fiber)
+                fiber.k = fiber.k.apply()
+                if (fiber.k === Continuation.halt) fiber.state = State.FINISHED
+            } catch (e: FiberException) {
+                throw e
+            } catch (e: Throwable) {
+                throw FiberException(e, k)
+            } finally {
+                popFiber()
             }
         }
 
         @JvmStatic
-        fun CANCEL(fiber: Fiber) {
-            when (fiber.state) {
-                State.ACTIVE -> {
-                    fiber.state = State.CANCELLED
-                    val k = fiber.k
-                    try {
-                        pushFiber(fiber)
-                        fiber.k = fiber.k.apply()
-                        if (fiber.k === Continuation.halt) fiber.state = State.FINISHED
-                    } catch (e: FiberException) {
-                        throw e
-                    } catch (e: Throwable) {
-                        throw FiberException(e, k)
-                    } finally {
-                        popFiber()
-                    }
-                }
+        fun UNRAVEL(fiber: Fiber) {
+            if (fiber.state == State.ACTIVE) unravelInternal(fiber)
+        }
 
-                State.FINISHED -> {}
-                State.CANCELLED -> throw IllegalStateException("attempted to CANCEL already cancelled continuation")
+        @JvmStatic
+        fun CANCEL(fiber: Fiber) {
+            if (fiber.state == State.ACTIVE) {
+                fiber.state = State.CANCELLED
+                unravelInternal(fiber)
             }
         }
 
