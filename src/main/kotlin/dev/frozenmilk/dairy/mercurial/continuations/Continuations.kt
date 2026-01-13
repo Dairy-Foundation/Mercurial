@@ -688,7 +688,7 @@ object Continuations {
                 k: Continuation,
             ) = Continuation(name ?: "parallel") { self ->
                 val finished: Boolean
-                fibers.map { fibers ->
+                fibers.set { fibers ->
                     Cons.filter(fibers) { fiber ->
                         Fiber.SUBSCHEDULE(fiber)
                         fiber.state != Fiber.State.FINISHED
@@ -731,7 +731,7 @@ object Continuations {
 
                 Continuation(name ?: "race") { self ->
                     var finished = false
-                    fibers.map { fibers ->
+                    fibers.set { fibers ->
                         Cons.filter(fibers) { fiber ->
                             Fiber.SUBSCHEDULE(fiber)
                             val alive = fiber.state != Fiber.State.FINISHED
@@ -784,7 +784,7 @@ object Continuations {
                             if (fibers.get() == null) k
                             else cancel
                         } else {
-                            fibers.map { fibers ->
+                            fibers.set { fibers ->
                                 Cons.filter(fibers) { fiber ->
                                     Fiber.SUBSCHEDULE(fiber)
                                     fiber.state != Fiber.State.FINISHED

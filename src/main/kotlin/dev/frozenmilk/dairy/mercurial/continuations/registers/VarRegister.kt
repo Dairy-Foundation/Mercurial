@@ -10,7 +10,30 @@ import kotlin.reflect.KProperty
 
 class VarRegister<T> : ValRegister<T>(), Consumer<T> {
     fun set(value: T) = Fiber.Registers.SET(this, value)
+    fun set(f: Modifier<T>) = Fiber.Registers.MAP(this, f)
+
+    @OptIn(ExperimentalContracts::class)
+    @JvmSynthetic
+    @IgnorableReturnValue
+    inline fun set(f: (T) -> T): T {
+        contract {
+            callsInPlace(f, InvocationKind.EXACTLY_ONCE)
+        }
+        return Fiber.Registers.MAP(this, f)
+    }
+
+    @Deprecated(
+        "renamed to set",
+        level = DeprecationLevel.WARNING,
+        replaceWith = ReplaceWith("set(f)"),
+    )
     fun map(f: Modifier<T>) = Fiber.Registers.MAP(this, f)
+
+    @Deprecated(
+        "renamed to set",
+        level = DeprecationLevel.WARNING,
+        replaceWith = ReplaceWith("set(f)"),
+    )
     @OptIn(ExperimentalContracts::class)
     @JvmSynthetic
     inline fun map(f: (T) -> T): T {
@@ -19,6 +42,7 @@ class VarRegister<T> : ValRegister<T>(), Consumer<T> {
         }
         return Fiber.Registers.MAP(this, f)
     }
+
     override fun accept(t: T) = set(t)
     operator fun setValue(thisRef: Any?, property: KProperty<*>, value: T) = set(value)
 }
