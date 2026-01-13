@@ -924,8 +924,49 @@ object Continuations {
     // async
     //
 
-    interface Spawnable {
-        fun spawn(): Fiber
+    interface SpawnableClosure : Closure {
+        fun bindRegister(register: Consumer<Fiber>): Closure
+        operator fun invoke(register: Consumer<Fiber>) = bindRegister(register)
+    }
+
+    @JvmStatic
+    @OptIn(ExperimentalContracts::class)
+    inline fun async(
+        scheduler: Supplier<Scheduler>,
+        register: Consumer<Fiber>,
+        withEnv: Env.() -> IntoContinuation,
+    ): Closure {
+        contract {
+            callsInPlace(withEnv, InvocationKind.EXACTLY_ONCE)
+        }
+        val env = Env()
+        val withEnv = withEnv(env).intoContinuation()
+        val inner = env.compose(withEnv)
+
+        // has no registers
+        return if (inner == withEnv) exec {
+            register.accept(scheduler.get().schedule(inner))
+        }
+        // has registers
+        else exec {
+            register.accept(scheduler.get().schedule(inner).also(Fiber::SUBSCHEDULE))
+        }
+    }
+
+    @JvmStatic
+    @OptIn(ExperimentalContracts::class)
+    inline fun async(
+        register: Consumer<Fiber>,
+        withEnv: Env.() -> IntoContinuation,
+    ): Closure {
+        contract {
+            callsInPlace(withEnv, InvocationKind.EXACTLY_ONCE)
+        }
+        return async(
+            Scheduler::currentScheduler,
+            register,
+            withEnv,
+        )
     }
 
     @JvmStatic
@@ -933,23 +974,33 @@ object Continuations {
     inline fun async(
         scheduler: Supplier<Scheduler>,
         withEnv: Env.() -> IntoContinuation,
-    ): Spawnable {
+    ): SpawnableClosure {
         contract {
             callsInPlace(withEnv, InvocationKind.EXACTLY_ONCE)
         }
         val env = Env()
         val withEnv = withEnv(env).intoContinuation()
         val inner = env.compose(withEnv)
-        // no registers
-        return if (inner == withEnv) object : Spawnable {
-            override fun spawn() = scheduler.get().schedule(inner)
-        }
-        // registers
-        else object : Spawnable {
-            override fun spawn() = scheduler.get().schedule(inner).also { f ->
-                // run one step on the current callstack, as so to re-scope registers
-                Fiber.SUBSCHEDULE(f)
+
+        val spawn = { register: Consumer<Fiber> ->
+            // has no registers
+            if (inner == withEnv) exec {
+                register.accept(scheduler.get().schedule(inner))
             }
+            // has registers
+            else exec {
+                register.accept(scheduler.get().schedule(inner).also(Fiber::SUBSCHEDULE))
+            }
+        }
+        val boundSpawn = spawn {}
+
+        return object : SpawnableClosure {
+            override fun close(
+                name: String?,
+                k: Continuation,
+            ) = boundSpawn.close(name, k)
+
+            override fun bindRegister(register: Consumer<Fiber>) = spawn(register)
         }
     }
 
@@ -957,7 +1008,7 @@ object Continuations {
     @OptIn(ExperimentalContracts::class)
     inline fun async(
         withEnv: Env.() -> IntoContinuation,
-    ): Spawnable {
+    ): SpawnableClosure {
         contract {
             callsInPlace(withEnv, InvocationKind.EXACTLY_ONCE)
         }
@@ -968,22 +1019,8 @@ object Continuations {
     }
 
     @JvmStatic
-    fun spawn(
-        spawnable: Spawnable,
-        register: Consumer<Fiber>,
-    ) = exec { register.accept(spawnable.spawn()) }
+    fun await(register: Supplier<Fiber>) = waitUntil { register.get().state.finished }
 
     @JvmStatic
-    fun spawn(spawnable: Spawnable) = exec { spawnable.spawn() }
-
-    private val awaitRegister = ValRegister<Fiber>()
-
-    @JvmStatic
-    fun await(register: Supplier<Fiber>) = scope {
-        val fiber by bind(awaitRegister, register)
-        waitUntil { fiber.state != Fiber.State.ACTIVE }
-    }
-
-    @JvmStatic
-    fun cancel(register: Supplier<Fiber>) = exec { Fiber.CANCEL(register.get()) }
+    fun cancel(register: Supplier<Fiber>) = exec { Fiber.INTERRUPT(register.get()) }
 }
