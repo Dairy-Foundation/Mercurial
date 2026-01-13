@@ -535,25 +535,26 @@ object Continuations {
     }
 
     //
-    // wait
+    // wait-until
     //
 
-    @JvmSynthetic
-    fun wait(cond: BooleanSupplier): Closure = object : FactoryClosure() {
+    @JvmStatic
+    fun waitUntil(cond: BooleanSupplier): Closure = object : FactoryClosure() {
         override fun close(
             name: String?,
             k: Continuation,
-        ) = Continuation(name ?: "wait") { self ->
+        ) = Continuation(name ?: "wait-until") { self ->
             if (cond.asBoolean) k
             else self
         }
     }
 
-    @JvmStatic
-    fun waitUntil(cond: BooleanSupplier) = wait(cond)
+    @JvmSynthetic
+    @Deprecated("renamed to waitUntil", replaceWith = ReplaceWith("waitUntil(cond)"))
+    fun wait(cond: BooleanSupplier) = waitUntil(cond)
 
     //
-    // wait seconds
+    // wait-seconds
     //
 
     interface Clock {
@@ -571,8 +572,8 @@ object Continuations {
 
     private val startTimeRegister = ValRegister<Long>()
 
-    @JvmSynthetic
-    fun wait(clock: Clock, seconds: Double): Closure = scope {
+    @JvmStatic
+    fun waitSeconds(clock: Clock, seconds: Double) = scope {
         val duration = clock.convSeconds(seconds)
         val startTime by bind(startTimeRegister, clock::getTime)
 
@@ -580,27 +581,56 @@ object Continuations {
             override fun close(
                 name: String?,
                 k: Continuation,
-            ) = Continuation(name ?: "wait $seconds") { self ->
+            ) = Continuation(name ?: "wait-seconds $seconds") { self ->
                 if (clock.done(startTime, duration)) k
                 else self
             }
         }
     }
 
+    @JvmStatic
+    fun waitSeconds(seconds: Double) = waitSeconds(Clock.Standard, seconds)
+
     @JvmSynthetic
-    fun wait(seconds: Double) = wait(Clock.Standard, seconds)
+    @Deprecated("renamed to waitSeconds", replaceWith = ReplaceWith("waitSeconds(clock, seconds)"))
+    fun wait(clock: Clock, seconds: Double) = waitSeconds(clock, seconds)
 
-    /**
-     * @see wait
-     */
-    @JvmStatic
-    fun waitSeconds(clock: Clock, seconds: Double) = wait(clock, seconds)
+    @JvmSynthetic
+    @Deprecated("renamed to waitSeconds", replaceWith = ReplaceWith("waitSeconds(seconds)"))
+    fun wait(seconds: Double) = waitSeconds(Clock.Standard, seconds)
 
-    /**
-     * @see wait
-     */
+    private val durationRegister = ValRegister<Long>()
+
     @JvmStatic
-    fun waitSeconds(seconds: Double) = wait(seconds)
+    fun waitSeconds(clock: Clock, seconds: DoubleSupplier) = scope {
+        val duration by bind(durationRegister) { clock.convSeconds(seconds.asDouble) }
+        val startTime by bind(startTimeRegister, clock::getTime)
+
+        object : FactoryClosure() {
+            override fun close(
+                name: String?,
+                k: Continuation,
+            ) = Continuation(name ?: "wait-seconds $seconds") { self ->
+                if (clock.done(startTime, duration)) k
+                else self
+            }
+        }
+    }
+
+    @JvmStatic
+    fun waitSeconds(seconds: DoubleSupplier) = waitSeconds(Clock.Standard, seconds)
+
+    @JvmStatic
+    fun waitFor(clock: Clock, duration: Duration) = waitSeconds(clock, duration.toDouble(DurationUnit.SECONDS))
+
+    @JvmStatic
+    fun waitFor(duration: Duration) = waitSeconds(duration.toDouble(DurationUnit.SECONDS))
+
+    @JvmStatic
+    fun waitFor(clock: Clock, duration: Supplier<Duration>) = waitSeconds(clock) { duration.get().toDouble(DurationUnit.SECONDS) }
+
+    @JvmStatic
+    fun waitFor(duration: Supplier<Duration>) = waitSeconds { duration.get().toDouble(DurationUnit.SECONDS) }
 
     //
     // concurrency registers
