@@ -644,20 +644,26 @@ object Continuations {
     //
 
     @JvmStatic
-    fun fork(process: IntoContinuation) = process as? Closure ?: scope {
+    fun fork(process: IntoContinuation) = process as? Closure ?: run {
         val process = process.intoContinuation()
-        val fiber by bind(fiberRegister) { Fiber(process) }
 
-        object : FactoryClosure() {
-            override fun close(
-                name: String?,
-                k: Continuation,
-            ) = Continuation(name ?: "fork") { self ->
-                val fiber = fiber
-                Fiber.SUBSCHEDULE(fiber)
-                if (fiber.state === Fiber.State.FINISHED) k
-                else self
+        val inner = scope {
+            val fiber by bind(fiberRegister) { Fiber(process) }
+
+            object : FactoryClosure() {
+                override fun close(
+                    name: String?,
+                    k: Continuation,
+                ) = Continuation(name ?: "fork") { self ->
+                    if (Fiber.SUBSCHEDULE(fiber)) k
+                    else self
+                }
             }
+        }
+
+        Closure { name, k ->
+            if (k == Continuation.halt) process
+            else inner.close(name, k)
         }
     }
 
