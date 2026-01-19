@@ -40,7 +40,7 @@ class Mutex<PRIORITY, T>(
     }
 
     internal fun popFiber(fiber: Fiber) {
-        if (callstack?.car != fiber) return
+        if (callstack?.car?.fiber != fiber) return
         val cons = checkNotNull(callstack) { "attempted to pop fiber off an empty callstack" }
         callstack = cons.cdr
         Cons.drop(cons)
