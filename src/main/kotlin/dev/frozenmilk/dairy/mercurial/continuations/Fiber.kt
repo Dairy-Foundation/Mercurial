@@ -170,7 +170,14 @@ class Fiber(private var k: Continuation) {
         }
 
         @JvmStatic
-        fun SUBSCHEDULE(child: Fiber) = if (currentFiber.state === State.CANCELLED) CANCEL(child)
-        else UNRAVEL(child)
+        fun SUBSCHEDULE(child: Fiber) = if (currentFiber.state === State.CANCELLED) {
+            CANCEL(child)
+        } else if (child.state !== State.CANCELLED) {
+            UNRAVEL(child)
+        } else {
+            // The child is already canceled
+            // The parent should then see that it's canceled
+            Unit
+        }
     }
 }
