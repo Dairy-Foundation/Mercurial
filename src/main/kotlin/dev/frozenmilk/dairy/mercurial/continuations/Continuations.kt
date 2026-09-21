@@ -1,109 +1,81 @@
 package dev.frozenmilk.dairy.mercurial.continuations
 
-import dev.frozenmilk.dairy.mercurial.continuations.registers.Register
-import dev.frozenmilk.dairy.mercurial.continuations.registers.ValRegister
-import dev.frozenmilk.dairy.mercurial.continuations.registers.VarRegister
-import dev.frozenmilk.util.collections.Cons
-import dev.frozenmilk.util.collections.Ord
-import dev.frozenmilk.util.collections.WeightBalancedTreeMap
+import dev.frozenmilk.dairy.mercurial.Mercurial
+import dev.frozenmilk.dairy.mercurial.continuations.Continuation.Builder
+import dev.frozenmilk.dairy.mercurial.continuations.Continuation.IOExec
+import dev.frozenmilk.dairy.mercurial.continuations.Continuation.Value
+import dev.frozenmilk.dairy.mercurial.environments.Reference
+import dev.frozenmilk.dairy.mercurial.processes.Channel
+import dev.frozenmilk.dairy.mercurial.processes.ExitReason
+import dev.frozenmilk.dairy.mercurial.processes.Fiber
+import dev.frozenmilk.dairy.mercurial.processes.Messages
+import dev.frozenmilk.dairy.mercurial.Tracing.traced
+import dev.frozenmilk.util.collections.WBT
+import org.jetbrains.annotations.Contract
 import java.util.function.BooleanSupplier
-import java.util.function.Consumer
+import java.util.function.DoubleSupplier
+import java.util.function.IntSupplier
 import java.util.function.Supplier
-import kotlin.contracts.ExperimentalContracts
-import kotlin.contracts.InvocationKind
-import kotlin.contracts.contract
-import kotlin.reflect.KClass
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeMark
 
 object Continuations {
     //
-    // scope
+    // halt
     //
 
-    @Suppress("FunctionName")
-    class Env {
-        private class ScopedRegister<T>(val register: Register<T>, val initializer: Supplier<T>) {
-            fun create() {
-                Fiber.Registers.CREATE(register, initializer.get())
-            }
-
-            fun delete() {
-                Fiber.Registers.DELETE(register)
-            }
-        }
-
-        private var registers: Cons<ScopedRegister<*>>? = null
-
-        fun <T> variable(initializer: Supplier<T>) = VarRegister<T>().also {
-            registers = Cons.cons(ScopedRegister(it, initializer), registers)
-        }
-
-        fun <T> value(initializer: Supplier<T>) = ValRegister<T>().also {
-            registers = Cons.cons(ScopedRegister(it, initializer), registers)
-        }
-
-        fun <T, R : Register<T>> bind(register: R, initializer: Supplier<T>) = register.also {
-            registers = Cons.cons(ScopedRegister(it, initializer), registers)
-        }
-
-        private fun CREATE() = CREATE(registers)
-        private fun CREATE(cons: Cons<ScopedRegister<*>>?) {
-            if (cons != null) {
-                CREATE(cons.cdr)
-                cons.car.create()
-            }
-        }
-
-        private fun DELETE() {
-            Cons.forEach(registers, ScopedRegister<*>::delete)
-        }
-
-        @PublishedApi
-        internal fun compose(inner: Closure) = if (registers == null) inner
-        else sequence(
-            exec(::CREATE),
-            inner,
-            exec(::DELETE),
-        )
-
-        @PublishedApi
-        internal fun compose(inner: Continuation) = if (registers == null) inner
-        else exec(::CREATE).close(inner)
-    }
-
-    @JvmStatic
-    @OptIn(ExperimentalContracts::class)
-    inline fun scope(
-        withEnv: Env.() -> Closure
-    ): Closure {
-        contract {
-            callsInPlace(withEnv, InvocationKind.EXACTLY_ONCE)
-        }
-        val env = Env()
-        return env.compose(withEnv(env))
-    }
+    @JvmField
+    val halt: Continuation = Continuation.Halt
 
     //
     // noop
     //
 
-    private val NOOP = Closure { _, k -> k }
+    @JvmField
+    val noop: Builder<*> = Continuation.Halt
 
-    @JvmStatic
-    fun noop() = NOOP
+    //
+    // value
+    //
+
+    @Suppress("ClassName")
+    object value {
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> o(f: Supplier<out T>): Builder<T> = traced { trace ->
+            Value.O.Builder(trace, f)
+        }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun d(f: DoubleSupplier): Builder<Double> = traced { trace ->
+            Value.D.Builder(trace, f)
+        }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun i(f: IntSupplier): Builder<Int> = traced { trace ->
+            Value.I.Builder(trace, f)
+        }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun b(f: BooleanSupplier): Builder<Boolean> = traced { trace ->
+            Value.B.Builder(trace, f)
+        }
+    }
+
+    // TODO: top level maps (all 16)
 
     //
     // exec
     //
 
     @JvmStatic
-    fun exec(f: Runnable): Closure = object : FactoryClosure() {
-        override fun close(
-            name: String?,
-            k: Continuation,
-        ) = Continuation(name ?: "exec") {
-            f.run()
-            k
-        }
+    @Contract(pure = true)
+    fun exec(f: Runnable): Builder<Any?> = traced { trace ->
+        IOExec.Builder(trace, f)
     }
 
     //
@@ -111,356 +83,147 @@ object Continuations {
     //
 
     @JvmStatic
-    fun sequence(vararg closures: Closure) = if (closures.isEmpty()) noop()
-    else if (closures.size == 1) closures[0]
-    else Closure { name, k ->
-        closures.foldRight(k) { closure, k -> closure.close(name, k) }
-    }
-
-    //
-    // if?
-    //
-
-    interface BinaryBranch : Closure {
-        fun elseIfHuh(
-            cond: BooleanSupplier,
-            t: Closure,
-        ): BinaryBranch = joinBinaryBranches(
-            this,
-            ifHuh(cond, t),
-        )
-
-        fun elseIfHuh(
-            cond: ValRegister<Boolean>,
-            t: Closure,
-        ): BinaryBranch = joinBinaryBranches(
-            this,
-            ifHuh(cond, t),
-        )
-
-        fun elseHuh(f: Closure): Closure
-    }
-
-    private fun joinBinaryBranches(
-        a: BinaryBranch,
-        b: BinaryBranch,
-    ) = run {
-        object : BinaryBranch {
-            override fun close(
-                name: String?,
-                k: Continuation,
-            ) = a.elseHuh(b).close(name, k)
-
-            override fun elseHuh(f: Closure) = a.elseHuh(b.elseHuh(f))
-        }
-    }
+    @Contract(pure = true)
+    fun sequence(vararg builders: Builder<*>): Builder<Any?> =
+        builders.reduceRightOrNull { a, b -> a.then(b) } ?: noop
 
     @JvmStatic
-    fun ifHuh(
-        cond: BooleanSupplier,
-        t: Closure,
-    ): BinaryBranch = object : FactoryClosure(), BinaryBranch {
-        override fun close(
-            name: String?,
-            k: Continuation,
-        ) = run {
-            val t = t.close(name, k)
-            Continuation(name ?: "if?") {
-                if (cond.asBoolean) t
-                else k
-            }
-        }
+    @Contract(pure = true)
+    fun sequence(builders: List<Builder<*>>): Builder<Any?> =
+        builders.reduceRightOrNull { a, b -> a.then(b) } ?: noop
 
-        override fun elseHuh(f: Closure): Closure = object : FactoryClosure() {
-            override fun close(
-                name: String?,
-                k: Continuation,
-            ) = run {
-                val t = t.close(name, k)
-                val f = f.close(name, k)
-                Continuation(name ?: "if?") {
-                    if (cond.asBoolean) t
-                    else f
-                }
-            }
-        }
-    }
+    //
+    // if
+    //
 
     @JvmStatic
-    fun ifHuh(
-        cond: ValRegister<Boolean>,
-        t: Closure,
-    ) = ifHuh({ cond.get() }, t)
-
-    //
-    // match?
-    //
-
-    class Match<T> private constructor(
-        private val select: Supplier<T>,
-        private val ord: Ord<in T>,
-        private val cases: WeightBalancedTreeMap<T, Closure>?,
-    ) : FactoryClosure() {
-        internal constructor(
-            select: Supplier<T>,
-            ord: Ord<in T>,
-        ) : this(
-            select,
-            ord,
+    @Contract(pure = true)
+    fun <T> ifThen(
+        cond: Builder<Boolean>,
+        t: Builder<T>,
+    ): IfThen<T> = traced { trace ->
+        IfThen(
             null,
+            trace,
+            cond,
+            t,
         )
-
-        fun branch(case: T, closure: Closure) = Match(
-            select,
-            ord,
-            WeightBalancedTreeMap.add(
-                ord,
-                cases,
-                case,
-                closure,
-            ),
-        )
-
-        fun defaultBranch(closure: Closure): Closure = if (cases == null) closure
-        else Closure { name, k ->
-            val cases = WeightBalancedTreeMap.inorderFold(
-                cases,
-                null as WeightBalancedTreeMap<T, Continuation>?,
-            ) { cases, case, closure ->
-                WeightBalancedTreeMap.add(
-                    ord,
-                    cases,
-                    case,
-                    closure.close(name, k),
-                )
-            }
-            val default = closure.close(name, k)
-            Continuation(name ?: "match?") {
-                WeightBalancedTreeMap.get(
-                    ord,
-                    cases,
-                    select.get(),
-                )?.v ?: default
-            }
-        }
-
-        fun assertExhaustive() = defaultBranch(unreachable())
-
-        override fun close(
-            name: String?,
-            k: Continuation,
-        ) = defaultBranch(noop()).close(name, k)
     }
 
     @JvmStatic
-    fun <T> match(
-        select: Supplier<T>,
-        ord: Ord<in T>,
-    ) = Match(
-        select,
-        ord,
-    )
+    @Contract(pure = true)
+    fun <T> ifThen(
+        cond: Builder<Boolean>,
+        t: Builder<T>,
+        f: Builder<T>,
+    ) = traced { ifThen(cond, t).elseThen(f) }
 
     @JvmStatic
-    fun <T> match(select: Supplier<T>) = Match(select, Ord.HashCode)
+    @Contract(pure = true)
+    fun <T> ifThen(
+        cond: BooleanSupplier,
+        t: Builder<T>,
+    ) = traced {
+        ifThen(value.b(cond), t)
+    }
+
+    @JvmStatic
+    @Contract(pure = true)
+    fun <T> ifThen(
+        cond: BooleanSupplier,
+        t: Builder<T>,
+        f: Builder<T>,
+    ) = traced {
+        ifThen(cond, t).elseThen(f)
+    }
 
     //
-    // match-type?
+    // match
     //
 
-    fun interface TypeMatchedClosure<T> {
-        fun bind(register: ValRegister<T>): Closure
-    }
-
-    class MatchType<T> private constructor(
-        private val select: Supplier<T>,
-        private val register: ValRegister<T>,
-        private val cases: WeightBalancedTreeMap<Class<out T>?, TypeMatchedClosure<out T>>?,
-    ) : FactoryClosure() {
-        private class UnboundClosure<T>(val closure: Closure) : TypeMatchedClosure<T> {
-            override fun bind(register: ValRegister<T>) = closure
-        }
-
-        private class UnboundContinuation(k: Continuation) : Continuation by k
-
-        internal constructor(select: Supplier<T>) : this(
-            select, ValRegister(), null
+    @JvmStatic
+    @Contract(pure = true)
+    fun <M, T> match(
+        value: Builder<M>,
+        with: Cases.Inexhaustive<M, T>,
+    ): Builder<Any?> = traced { trace ->
+        Match.Inexhaustive(
+            trace,
+            value,
+            with,
         )
+    }
 
-        @Suppress("UNCHECKED_CAST")
-        fun <CASE : T & Any> branch(case: Class<CASE>, closure: TypeMatchedClosure<CASE>) =
-            MatchType(
-                select,
-                register,
-                WeightBalancedTreeMap.add(
-                    Ord.HashCode,
-                    cases,
-                    case,
-                    closure,
-                ),
-            )
-
-        fun <CASE : T & Any> branch(case: Class<CASE>, closure: Closure) =
-            branch(case, UnboundClosure(closure))
-
-        fun <CASE : T & Any> branch(case: KClass<CASE>, closure: TypeMatchedClosure<CASE>) =
-            branch(case.javaObjectType, closure)
-
-        fun <CASE : T & Any> branch(case: KClass<CASE>, closure: Closure) =
-            branch(case.javaObjectType, closure)
-
-        inline fun <reified CASE : T & Any> branch(closure: TypeMatchedClosure<CASE>) =
-            branch(CASE::class, closure)
-
-        inline fun <reified CASE : T & Any> branch(closure: Closure) = branch(CASE::class, closure)
-
-        fun nullBranch(closure: Closure) = MatchType(
-            select,
-            register,
-            WeightBalancedTreeMap.add(
-                Ord.HashCode,
-                cases,
-                null,
-                UnboundClosure(closure),
-            ),
+    @JvmStatic
+    @Contract(pure = true)
+    fun <M, T> match(
+        value: Builder<M>,
+        with: Cases.Exhaustive<M, T>,
+    ): Builder<T> = traced { trace ->
+        Match.Exhaustive(
+            trace,
+            value,
+            with,
         )
-
-        @Suppress("UNCHECKED_CAST")
-        fun default(closure: TypeMatchedClosure<T>): Closure = if (cases == null) when (closure) {
-            is UnboundClosure<*> -> closure.closure
-
-            else -> sequence(
-                exec { Fiber.Registers.CREATE(register, select.get()) },
-                closure.bind(register),
-                exec { Fiber.Registers.DELETE(register) },
-            )
-        }
-        else Closure { name, k ->
-            val delete = exec { Fiber.Registers.DELETE(register) }
-            val cases = WeightBalancedTreeMap.inorderFold(
-                cases,
-                null as WeightBalancedTreeMap<Class<out T>?, Continuation>?,
-            ) { cases, case, typeMatchedClosure ->
-                WeightBalancedTreeMap.add(
-                    Ord.HashCode,
-                    cases,
-                    case,
-                    when (typeMatchedClosure) {
-                        is UnboundClosure<*> -> UnboundContinuation(
-                            typeMatchedClosure.closure.close(
-                                name,
-                                k,
-                            )
-                        )
-
-                        else -> sequence(
-                            (typeMatchedClosure as TypeMatchedClosure<T>).bind(register),
-                            delete,
-                        ).close(name, k)
-                    },
-                )
-            }
-
-            val default = when (closure) {
-                is UnboundClosure<*> -> UnboundContinuation(
-                    closure.closure.close(
-                        name,
-                        k,
-                    )
-                )
-
-                else -> sequence(
-                    closure.bind(register),
-                    delete,
-                ).close(name, k)
-            }
-
-            Continuation(name ?: "match-type?") {
-                val select = select.get()
-
-                val case = WeightBalancedTreeMap.get(
-                    Ord.HashCode,
-                    cases,
-                    select?.javaClass,
-                )?.v ?: default
-
-                if (case !is UnboundContinuation) Fiber.Registers.CREATE(register, select)
-                case
-            }
-        }
-
-        fun default(closure: Closure) = default(UnboundClosure(closure))
-
-        fun assertExhaustive() = default(unreachable())
-
-        override fun close(
-            name: String?,
-            k: Continuation,
-        ) = default(noop()).close(name, k)
     }
 
     @JvmStatic
-    fun <T> matchType(select: Supplier<T>) = MatchType(select)
+    @Contract(pure = true)
+    fun <M, T> match(
+        f: Supplier<M>,
+        with: Cases.Inexhaustive<M, T>,
+    ) = traced {
+        match(
+            value.o(f),
+            with,
+        )
+    }
+
+    @JvmStatic
+    @Contract(pure = true)
+    fun <M, T> match(
+        f: Supplier<M>,
+        with: Cases.Exhaustive<M, T>,
+    ) = traced {
+        match(
+            value.o(f),
+            with,
+        )
+    }
+
+    @JvmStatic
+    @Contract(pure = true)
+    fun <M, T> cases() = Cases.Inexhaustive<M, T>()
 
     //
-    // letrec
+    // panic
     //
 
-    fun interface Letrec {
-        fun fix(self: Closure): Closure
+    @JvmStatic
+    @Contract(pure = true)
+    fun panic(msg: Supplier<String>) = traced {
+        value.o { throw RuntimeException(msg.get()) }
     }
 
     @JvmStatic
-    fun letrec(
-        letrec: Letrec,
-    ): Closure = object : FactoryClosure() {
-        override fun close(
-            name: String?,
-            k: Continuation,
-        ) = object {
-            val fixed: Closure = letrec.fix { name, k2 ->
-                if (k2 == k) indirectSelf
-                else indirectTerminated.close(name, k2)
-            }
-            val indirectTerminated = run {
-                val indirect = object : Continuation {
-                    override val stackTrace get() = terminated.stackTrace
-                    override fun apply() = terminated.apply()
-                    override fun toString() = terminated.toString()
-                }
-                fork(indirect)
-            }
-            val terminated = fixed.close(name, Continuation.halt)
-            val indirectSelf = object : Continuation {
-                override val stackTrace get() = self.stackTrace
-                override fun apply() = self.apply()
-                override fun toString() = self.toString()
-            }
-            val self = fixed.close(name, k)
-        }.self
+    @Contract(pure = true)
+    fun panic(msg: String) = traced {
+        value.o { throw RuntimeException(msg) }
     }
 
+    @JvmField
+    val unreachable = value.o {
+        throw IllegalStateException("Reached unreachable state, your program is invalid")
+    }
+
+    //
+    // expression
+    //
+
     @JvmStatic
-    fun letrecStrict(
-        letrec: Letrec,
-    ): Closure = object : FactoryClosure() {
-        override fun close(
-            name: String?,
-            k: Continuation,
-        ) = object {
-            val indirect = object : Continuation {
-                override val stackTrace get() = self.stackTrace
-                override fun apply() = self.apply()
-                override fun toString() = self.toString()
-            }
-            val self: Continuation = letrec.fix { _, k2 ->
-                // TODO: patch stacktrace a bit better
-                if (k2 != k) throw IllegalArgumentException("letrecStrict does not support non tail recursion").also {
-                    it.stackTrace = k2.stackTrace
-                }
-                indirect
-            }.close(name, k)
-        }.self
+    @Contract(pure = true)
+    fun <T> expression(f: Expression<*>.(self: Builder<T>) -> Builder<T>): Builder<T> = traced {
+        Expression(f).lambda
     }
 
     //
@@ -468,25 +231,29 @@ object Continuations {
     //
 
     @JvmStatic
-    fun loop(body: Closure) = letrecStrict { loop ->
-        sequence(
-            body,
-            loop,
+    @Contract(pure = true)
+    fun loop(body: Builder<*>) = expression<Nothing> { self ->
+        body.then(self)
+    }
+
+    @JvmStatic
+    @Contract(pure = true)
+    fun loop(cond: Builder<Boolean>, body: Builder<*>) = expression { self ->
+        ifThen(
+            cond,
+            body.then(self),
         )
     }
 
     @JvmStatic
-    fun loop(
-        cond: BooleanSupplier,
-        body: Closure,
-    ) = letrecStrict { loop ->
-        ifHuh(
-            cond,
-            sequence(
-                body,
-                loop,
-            ),
-        )
+    @Contract(pure = true)
+    fun loop(cond: BooleanSupplier, body: Builder<*>) = traced {
+        expression { self ->
+            ifThen(
+                cond,
+                body.then(self),
+            )
+        }
     }
 
     //
@@ -494,176 +261,296 @@ object Continuations {
     //
 
     @JvmStatic
-    fun repeat(times: Int, body: Closure) = if (times <= 0) noop()
-    else if (times == 1) body
-    else Closure { name, k ->
-        var res = k
-        var count = 0
-        while (count < times) {
-            res = body.close(name, res)
-            count++
-        }
-        res
+    @Contract(pure = true)
+    fun <T> repeat(n: Int, body: Builder<T>) = run {
+        require(n > 0) { "must repeat at least once" }
+        repeat(body, n - 1, body)
     }
 
+    private tailrec fun <T> repeat(
+        acc: Builder<T>,
+        n: Int,
+        body: Builder<T>,
+    ): Builder<T> = if (n == 0) acc
+    else repeat(acc.then(body), n - 1, body)
+
     //
-    // panic!
+    // waitUntil
     //
 
     @JvmStatic
-    fun panic(message: Supplier<String>): Closure = object : FactoryClosure() {
-        override fun close(
-            name: String?,
-            k: Continuation,
-        ) = Continuation("panic!") {
-            throw RuntimeException(message.get())
-        }
+    @Contract(pure = true)
+    fun waitUntil(cond: Builder<Boolean>) = expression { self ->
+        ifThen(
+            cond,
+            noop,
+            self,
+        )
+    }
+
+    @JvmStatic
+    @Contract(pure = true)
+    fun waitUntil(cond: BooleanSupplier) = expression { self ->
+        ifThen(
+            cond,
+            noop,
+            self,
+        )
     }
 
     //
-    // unreachable!
+    // waitFor
+    //
+
+    @JvmField
+    val waitFor = function<TimeMark, Any?> { _, timeMark ->
+        waitUntil { timeMark().hasPassedNow() }
+    }
+
+    @JvmStatic
+    @Contract(pure = true)
+    fun duration(duration: Supplier<Duration>) = Supplier {
+        Mercurial.timeSource.markNow() + duration.get()
+    }
+
+    @JvmStatic
+    @Contract(pure = true)
+    fun duration(duration: Duration) = duration { duration }
+
+    @JvmStatic
+    @Contract(pure = true)
+    fun seconds(seconds: DoubleSupplier) = duration { seconds.asDouble.seconds }
+
+    @JvmStatic
+    @Contract(pure = true)
+    fun seconds(seconds: Double) = duration(seconds.seconds)
+
+    @JvmField
+    val forever = duration { Duration.INFINITE }
+
+    @JvmField
+    val zero = duration { Duration.ZERO }
+
+    //
+    // command
+    //
+
+    @JvmField
+    val command = Command.DEFAULT
+
+    //
+    // spawn / await / exit
     //
 
     @JvmStatic
-    fun unreachable(): Closure = object : FactoryClosure() {
-        override fun close(
-            name: String?,
-            k: Continuation,
-        ) = Continuation("unreachable!") {
-            throw RuntimeException("reached unreachable state")
-        }
+    @Contract(pure = true)
+    fun <T> spawn(spawn: Builder<T>): Builder<Fiber<T>> = traced { trace ->
+        Continuation.Spawn.Builder(
+            trace,
+            spawn,
+            Fiber.SpawnFlag.None,
+        )
     }
-
-    //
-    // wait-until
-    //
 
     @JvmStatic
-    fun waitUntil(cond: BooleanSupplier): Closure = object : FactoryClosure() {
-        override fun close(
-            name: String?,
-            k: Continuation,
-        ) = Continuation(name ?: "wait-until") { self ->
-            if (cond.asBoolean) k
-            else self
+    @SafeVarargs
+    @Contract(pure = true)
+    fun <T> spawn(vararg spawns: Builder<out T>): Builder<WBT.Tree<Fiber<T>>?> = traced { trace ->
+        Continuation.Spawn.Set.Builder(
+            trace,
+            spawns.toList(),
+            Fiber.SpawnFlag.None,
+        )
+    }
+
+    @Suppress("ClassName")
+    object spawn {
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> link(spawn: Builder<T>): Builder<Fiber<T>> = traced { trace ->
+            Continuation.Spawn.Builder(
+                trace,
+                spawn,
+                Fiber.SpawnFlag.Link,
+            )
+        }
+
+        @JvmStatic
+        @SafeVarargs
+        @Contract(pure = true)
+        fun <T> link(vararg spawns: Builder<out T>): Builder<WBT.Tree<Fiber<T>>?> = traced { trace ->
+            Continuation.Spawn.Set.Builder(
+                trace,
+                spawns.toList(),
+                Fiber.SpawnFlag.Link,
+            )
+        }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> monitor(
+            channel: Supplier<out Channel<in Messages.Down>>,
+            spawn: Builder<T>,
+        ): Builder<Fiber<T>> = traced { trace ->
+            Continuation.Spawn.Builder(
+                trace,
+                spawn,
+                Fiber.SpawnFlag.Monitor(channel),
+            )
+        }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> monitor(
+            channel: Channel<in Messages.Down>,
+            spawn: Builder<T>,
+        ): Builder<Fiber<T>> = traced { trace ->
+            Continuation.Spawn.Builder(
+                trace,
+                spawn,
+                Fiber.SpawnFlag.Monitor { channel },
+            )
+        }
+
+        @JvmStatic
+        @SafeVarargs
+        @Contract(pure = true)
+        fun <T> monitor(
+            channel: Supplier<out Channel<in Messages.Down>>,
+            vararg spawns: Builder<out T>,
+        ): Builder<WBT.Tree<Fiber<T>>?> = traced { trace ->
+            Continuation.Spawn.Set.Builder(
+                trace,
+                spawns.toList(),
+                Fiber.SpawnFlag.Monitor(channel),
+            )
+        }
+
+        @JvmStatic
+        @SafeVarargs
+        @Contract(pure = true)
+        fun <T> monitor(
+            channel: Channel<in Messages.Down>,
+            vararg spawns: Builder<out T>,
+        ): Builder<WBT.Tree<Fiber<T>>?> = traced { trace ->
+            Continuation.Spawn.Set.Builder(
+                trace,
+                spawns.toList(),
+                Fiber.SpawnFlag.Monitor { channel },
+            )
         }
     }
 
-    @JvmSynthetic
-    @Deprecated("renamed to waitUntil", replaceWith = ReplaceWith("waitUntil(cond)"))
-    fun wait(cond: BooleanSupplier) = waitUntil(cond)
+    @Suppress("ClassName")
+    object await : Parameter.O<Fiber<*>, Return<Any?>>(function { _, fiber ->
+        waitUntil { !fiber().status.alive }
+    }) {
+        @JvmField
+        val exit = this
 
-    //
-    // wait-seconds
-    //
-
-    interface Clock {
-        fun getTime(): Long
-        fun convSeconds(seconds: Double): Long
-        fun done(startTime: Long, duration: Long): Boolean
-
-        object Standard : Clock {
-            override fun getTime() = System.nanoTime()
-            override fun convSeconds(seconds: Double) = (seconds * 1e9).toLong()
-            override fun done(startTime: Long, duration: Long) =
-                (System.nanoTime() - startTime) > duration
+        @JvmField
+        val status = function<Fiber<*>, ExitReason> { _, fiber ->
+            !waitUntil { !fiber().status.alive }
+            value.o { fiber().status as ExitReason }
         }
-    }
 
-    private val startTimeRegister = ValRegister<Long>()
-
-    @JvmStatic
-    fun waitSeconds(clock: Clock, seconds: Double) = scope {
-        val duration = clock.convSeconds(seconds)
-        val startTime by bind(startTimeRegister, clock::getTime)
-
-        object : FactoryClosure() {
-            override fun close(
-                name: String?,
-                k: Continuation,
-            ) = Continuation(name ?: "wait-seconds $seconds") { self ->
-                if (clock.done(startTime, duration)) k
-                else self
+        private val result = function<Fiber<*>, Fiber.Result<Any?>> { _, fiber ->
+            !waitUntil { !fiber().status.alive }
+            value.o {
+                val fiber = fiber()
+                val exitReason = fiber.status as ExitReason
+                if (exitReason is ExitReason.Normally) Fiber.Result.Ok(fiber.returnRegister.o)
+                else exitReason
             }
         }
-    }
 
-    @JvmStatic
-    fun waitSeconds(seconds: Double) = waitSeconds(Clock.Standard, seconds)
+        @Suppress("UNCHECKED_CAST")
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> result() = result as O<Fiber<T>, Return<Fiber.Result<T>>>
 
-    @JvmSynthetic
-    @Deprecated("renamed to waitSeconds", replaceWith = ReplaceWith("waitSeconds(clock, seconds)"))
-    fun wait(clock: Clock, seconds: Double) = waitSeconds(clock, seconds)
+        private val expect = function<Fiber<*>, Any?> { _, fiber ->
+            !waitUntil { !fiber().status.alive }
+            ifThen(
+                { fiber().status === ExitReason.Normally },
+                Continuation.CopyRegister.Builder(fiber)
+            ).elseThen(value.o {
+                throw IllegalStateException("Expected fiber ${fiber()} to exit normally")
+            })
+        }
 
-    @JvmSynthetic
-    @Deprecated("renamed to waitSeconds", replaceWith = ReplaceWith("waitSeconds(seconds)"))
-    fun wait(seconds: Double) = waitSeconds(Clock.Standard, seconds)
+        @Suppress("UNCHECKED_CAST")
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> expect() = expect as O<Fiber<T>, Return<T>>
 
-    private val durationRegister = ValRegister<Long>()
+        @JvmField
+        val all = function<WBT.Tree<out Fiber<*>>?, Any?> { _, fibers ->
+            waitUntil { Fiber.Set.all(fibers()) { !it.status.alive } }
+        }
 
-    @JvmStatic
-    fun waitSeconds(clock: Clock, seconds: DoubleSupplier) = scope {
-        val duration by bind(durationRegister) { clock.convSeconds(seconds.asDouble) }
-        val startTime by bind(startTimeRegister, clock::getTime)
-
-        object : FactoryClosure() {
-            override fun close(
-                name: String?,
-                k: Continuation,
-            ) = Continuation(name ?: "wait-seconds $seconds") { self ->
-                if (clock.done(startTime, duration)) k
-                else self
-            }
+        @JvmField
+        val any = function<WBT.Tree<out Fiber<*>>?, Any?> { _, fibers ->
+            waitUntil { Fiber.Set.any(fibers()) { !it.status.alive } }
         }
     }
 
-    @JvmStatic
-    fun waitSeconds(seconds: DoubleSupplier) = waitSeconds(Clock.Standard, seconds)
+    @Suppress("ClassName")
+    object exit : Parameter.O<Fiber<*>, Parameter.O<ExitReason, Return<Any?>>>(
+        function { _, fiber, exitReason ->
+            exec { fiber().exit(exitReason()) }
+        }
+    ) {
+        @JvmField
+        val one = this
 
-    @JvmStatic
-    fun waitFor(clock: Clock, duration: Duration) = waitSeconds(clock, duration.toDouble(DurationUnit.SECONDS))
-
-    @JvmStatic
-    fun waitFor(duration: Duration) = waitSeconds(duration.toDouble(DurationUnit.SECONDS))
-
-    @JvmStatic
-    fun waitFor(clock: Clock, duration: Supplier<Duration>) = waitSeconds(clock) { duration.get().toDouble(DurationUnit.SECONDS) }
-
-    @JvmStatic
-    fun waitFor(duration: Supplier<Duration>) = waitSeconds { duration.get().toDouble(DurationUnit.SECONDS) }
-
-    //
-    // concurrency registers
-    //
-
-    private val fiberRegister = ValRegister<Fiber>()
-    private val fibersRegister = VarRegister<Cons<Fiber>?>()
-
-    //
-    // fork
-    //
-
-    @JvmStatic
-    fun fork(process: IntoContinuation) = process as? Closure ?: run {
-        val process = process.intoContinuation()
-
-        val inner = scope {
-            val fiber by bind(fiberRegister) { Fiber(process) }
-
-            object : FactoryClosure() {
-                override fun close(
-                    name: String?,
-                    k: Continuation,
-                ) = Continuation(name ?: "fork") { self ->
-                    if (Fiber.SUBSCHEDULE(fiber)) k
-                    else self
+        @JvmField
+        val all = function<WBT.Tree<out Fiber<*>>?, ExitReason, Any?> { _, fibers, exitReason ->
+            exec {
+                val exitReason = exitReason()
+                Fiber.Set.foreach(fibers()) { fiber ->
+                    fiber.unlink()
+                    fiber.exit(exitReason)
                 }
             }
         }
+    }
 
-        Closure { name, k ->
-            if (k == Continuation.halt) process
-            else inner.close(name, k)
+    @Suppress("ClassName")
+    object interrupt : Parameter.O<Fiber<*>, Return<Any?>>(
+        function { _, fiber ->
+            exec { fiber().exit(ExitReason.Interrupt) }
+        }
+    ) {
+        @JvmField
+        val one = this
+
+        @JvmField
+        val all = function<WBT.Tree<out Fiber<*>>?, Any?> { _, fibers ->
+            exec {
+                Fiber.Set.foreach(fibers()) { fiber ->
+                    fiber.unlink()
+                    fiber.exit(ExitReason.Interrupt)
+                }
+            }
+        }
+    }
+
+    @Suppress("ClassName")
+    object kill : Parameter.O<Fiber<*>, Return<Any?>>(function { _, fiber ->
+        exec { fiber().exit(ExitReason.Kill) }
+    }) {
+        @JvmField
+        val one = this
+
+        @JvmField
+        val all = function<WBT.Tree<out Fiber<*>>?, Any?> { _, fibers ->
+            exec {
+                Fiber.Set.foreach(fibers()) { fiber ->
+                    fiber.unlink()
+                    fiber.exit(ExitReason.Kill)
+                }
+            }
         }
     }
 
@@ -672,78 +559,20 @@ object Continuations {
     //
 
     @JvmStatic
-    fun parallel(vararg processes: IntoContinuation) = if (processes.isEmpty()) noop()
-    else if (processes.size == 1) fork(processes[0])
-    else scope {
-        val processes = processes.map(IntoContinuation::intoContinuation)
-        val fibers = bind(fibersRegister) {
-            processes.foldRight(null as Cons<Fiber>?) { process, fibers ->
-                Cons.cons(Fiber(process), fibers)
-            }
-        }
-
-        object : FactoryClosure() {
-            override fun close(
-                name: String?,
-                k: Continuation,
-            ) = Continuation(name ?: "parallel") { self ->
-                val finished: Boolean
-                fibers.set { fibers ->
-                    Cons.filter(fibers) { fiber ->
-                        Fiber.SUBSCHEDULE(fiber)
-                        fiber.state != Fiber.State.FINISHED
-                    }.also { fibers ->
-                        finished = fibers == null
-                    }
-                }
-                if (finished) k
-                else self
-            }
-        }
-    }
+    @Contract(pure = true)
+    fun parallel(vararg spawns: Builder<*>) =
+        await.all * spawn.link(*spawns)
 
     //
     // race
     //
 
     @JvmStatic
-    fun race(vararg processes: IntoContinuation) = if (processes.isEmpty()) noop()
-    else if (processes.size == 1) fork(processes[0])
-    else scope {
-        val processes = processes.map(IntoContinuation::intoContinuation)
-        val fibers = bind(fibersRegister) {
-            processes.foldRight(null as Cons<Fiber>?) { process, fibers ->
-                Cons.cons(Fiber(process), fibers)
-            }
-        }
-
-        object : FactoryClosure() {
-            override fun close(
-                name: String?,
-                k: Continuation,
-            ) = run {
-                val cancel = Continuation(name ?: "race") {
-                    Cons.drainForEach(fibers.get()) { fiber ->
-                        Fiber.CANCEL(fiber)
-                    }
-                    k
-                }
-
-                Continuation(name ?: "race") { self ->
-                    var finished = false
-                    fibers.set { fibers ->
-                        Cons.filter(fibers) { fiber ->
-                            Fiber.SUBSCHEDULE(fiber)
-                            val alive = fiber.state != Fiber.State.FINISHED
-                            finished = finished || !alive
-                            alive
-                        }
-                    }
-                    if (finished) cancel
-                    else self
-                }
-            }
-        }
+    @Contract(pure = true)
+    fun race(vararg spawns: Builder<*>) = expression {
+        val fibers = o(spawn.link(*spawns))
+        !(await.any * fibers)
+        interrupt.all * fibers
     }
 
     //
@@ -751,276 +580,1711 @@ object Continuations {
     //
 
     @JvmStatic
-    fun deadline(deadline: IntoContinuation, vararg processes: IntoContinuation) =
-        if (processes.isEmpty()) fork(deadline)
-        else scope {
-            val deadline = deadline.intoContinuation()
-            val deadlineFiber by bind(fiberRegister) {
-                Fiber(deadline)
-            }
-            val processes = processes.map(IntoContinuation::intoContinuation)
-            val fibers = bind(fibersRegister) {
-                processes.foldRight(null as Cons<Fiber>?) { process, fibers ->
-                    Cons.cons(Fiber(process), fibers)
+    @Contract(pure = true)
+    fun <T> deadline(deadline: Builder<T>, vararg spawns: Builder<*>) = expression {
+        val deadline = o(spawn.link(deadline))
+        val fibers = o(spawn.link(*spawns))
+        !(await * deadline)
+        interrupt.all * fibers
+    }
+
+    //
+    // receive
+    //
+
+    @JvmStatic
+    @Contract(pure = true)
+    fun <T> receive() = Receive<T>()
+
+    //
+    // functions
+    //
+
+    @JvmStatic
+    @Contract(pure = true)
+    fun <A, T> function(
+        f: Expression<*>.(
+            self: Parameter.O<A, Return<T>>,
+            Reference.O<A>,
+        ) -> Builder<T>,
+    ) = function.O(f)
+
+    @JvmStatic
+    @Contract(pure = true)
+    fun <A, B, T> function(
+        f: Expression<*>.(
+            self: Parameter.O<A, Parameter.O<B, Return<T>>>,
+            Reference.O<A>,
+            Reference.O<B>,
+        ) -> Builder<T>,
+    ) = function.OO(f)
+
+    @JvmStatic
+    @Contract(pure = true)
+    fun <A, B, C, T> function(
+        f: Expression<*>.(
+            self: Parameter.O<A, Parameter.O<B, Parameter.O<C, Return<T>>>>,
+            Reference.O<A>,
+            Reference.O<B>,
+            Reference.O<C>,
+        ) -> Builder<T>,
+    ) = function.OOO(f)
+
+    @Suppress("ClassName")
+    object param {
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T, K : Lambda<K>> o(
+            f: LambdaBuilder.O<T, *>.(
+                self: Parameter.O<T, K>,
+                Reference.O<T>,
+            ) -> LambdaBuilder<K>,
+        ) = traced {
+            LambdaBuilder.O(f).lambda
+        }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <K : Lambda<K>> d(
+            f: LambdaBuilder.D<*>.(
+                self: Parameter.D<K>,
+                Reference.D,
+            ) -> LambdaBuilder<K>,
+        ) = traced {
+            LambdaBuilder.D(f).lambda
+        }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <K : Lambda<K>> i(
+            f: LambdaBuilder.I<*>.(
+                self: Parameter.I<K>,
+                Reference.I,
+            ) -> LambdaBuilder<K>,
+        ) = traced {
+            LambdaBuilder.I(f).lambda
+        }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <K : Lambda<K>> b(
+            f: LambdaBuilder.B<*>.(
+                self: Parameter.B<K>,
+                Reference.B,
+            ) -> LambdaBuilder<K>,
+        ) = traced {
+            LambdaBuilder.B(f).lambda
+        }
+    }
+
+    @Suppress("ClassName", "FunctionName", "Unused")
+    object function {
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, T> O(
+            f: Expression<*>.(
+                self: Parameter.O<A, Return<T>>,
+                Reference.O<A>,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Return<T>> =
+            param.o { self, a ->
+                body {
+                    f(self, a)
                 }
             }
 
-            object : FactoryClosure() {
-                override fun close(
-                    name: String?,
-                    k: Continuation,
-                ) = run {
-                    val cancel = Continuation(name ?: "deadline") {
-                        Cons.drainForEach(fibers.get()) { fiber ->
-                            Fiber.CANCEL(fiber)
-                        }
-                        k
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> D(
+            f: Expression<*>.(
+                self: Parameter.D<Return<T>>,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.D<Return<T>> =
+            param.d { self, a ->
+                body {
+                    f(self, a)
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> I(
+            f: Expression<*>.(
+                self: Parameter.I<Return<T>>,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.I<Return<T>> =
+            param.i { self, a ->
+                body {
+                    f(self, a)
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> B(
+            f: Expression<*>.(
+                self: Parameter.B<Return<T>>,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.B<Return<T>> =
+            param.b { self, a ->
+                body {
+                    f(self, a)
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, B, T> OO(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.O<B, Return<T>>>,
+                Reference.O<A>,
+                Reference.O<B>,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.O<B, Return<T>>> =
+            param.o { self, a ->
+                o { b ->
+                    body {
+                        f(self, a, b)
                     }
+                }
+            }
 
-                    Continuation(name ?: "deadline") { self ->
-                        val deadlineFiber = deadlineFiber
-                        Fiber.SUBSCHEDULE(deadlineFiber)
-                        if (deadlineFiber.state == Fiber.State.FINISHED) {
-                            if (fibers.get() == null) k
-                            else cancel
-                        } else {
-                            fibers.set { fibers ->
-                                Cons.filter(fibers) { fiber ->
-                                    Fiber.SUBSCHEDULE(fiber)
-                                    fiber.state != Fiber.State.FINISHED
-                                }
-                            }
-                            self
+        @JvmStatic
+        @Contract(pure = true)
+        fun <B, T> DO(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.O<B, Return<T>>>,
+                Reference.D,
+                Reference.O<B>,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.O<B, Return<T>>> =
+            param.d { self, a ->
+                o { b ->
+                    body {
+                        f(self, a, b)
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <B, T> IO(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.O<B, Return<T>>>,
+                Reference.I,
+                Reference.O<B>,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.O<B, Return<T>>> =
+            param.i { self, a ->
+                o { b ->
+                    body {
+                        f(self, a, b)
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <B, T> BO(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.O<B, Return<T>>>,
+                Reference.B,
+                Reference.O<B>,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.O<B, Return<T>>> =
+            param.b { self, a ->
+                o { b ->
+                    body {
+                        f(self, a, b)
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, B, C, T> OOO(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.O<B, Parameter.O<C, Return<T>>>>,
+                Reference.O<A>,
+                Reference.O<B>,
+                Reference.O<C>,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.O<B, Parameter.O<C, Return<T>>>> =
+            param.o { self, a ->
+                o { b ->
+                    o { c ->
+                        body {
+                            f(self, a, b, c)
                         }
                     }
                 }
             }
-        }
 
-    //
-    // command
-    //
-
-    class Command private constructor(
-        private val init: Runnable,
-        private val execute: Runnable,
-        private val finished: BooleanSupplier,
-        private val end: Runnable,
-    ) : Closure {
-        internal companion object {
-            val DEFAULT_RUNNABLE = Runnable {}
-            val DEFAULT_BOOLEAN_SUPPLIER = BooleanSupplier { true }
-            val DEFAULT_COMMAND = Command(
-                DEFAULT_RUNNABLE,
-                DEFAULT_RUNNABLE,
-                DEFAULT_BOOLEAN_SUPPLIER,
-                DEFAULT_RUNNABLE,
-            )
-        }
-
-        fun setInit(init: Runnable) = Command(
-            init,
-            execute,
-            finished,
-            end,
-        )
-
-        fun setExecute(execute: Runnable) = Command(
-            init,
-            execute,
-            finished,
-            end,
-        )
-
-        fun setFinished(finished: BooleanSupplier) = Command(
-            init,
-            execute,
-            finished,
-            end,
-        )
-
-        fun setEnd(end: Runnable) = Command(
-            init,
-            execute,
-            finished,
-            end,
-        )
-
-        override fun close(
-            name: String?,
-            k: Continuation,
-        ) = sequence(
-            if (init == DEFAULT_RUNNABLE) noop() else exec(init),
-            if (finished == DEFAULT_BOOLEAN_SUPPLIER) noop() else loop(
-                { !finished.asBoolean },
-                if (execute == DEFAULT_RUNNABLE) noop()
-                else exec(execute),
-            ),
-            if (end == DEFAULT_RUNNABLE) noop() else exec(end),
-        ).close(name, k)
-    }
-
-    @JvmStatic
-    fun command() = Command.DEFAULT_COMMAND
-
-    //
-    // jump
-    //
-
-    class JumpHandle internal constructor(
-        addressRegister: VarRegister<Continuation?>,
-        private val jumpName: String?,
-        private val jumpK: Continuation,
-    ) {
-        private var address by addressRegister
-
-        fun jump() = jump(noop())
-
-        /**
-         * WARNING: [addr] does not run sequentially with the rest of the code,
-         * it is easy to accidentally use un-bound registers within it
-         */
-        fun jump(addr: Closure): Closure = object : FactoryClosure() {
-            override fun close(
-                name: String?,
-                k: Continuation,
-            ) = run {
-                val addr = addr.close(jumpName, jumpK)
-                Continuation(name ?: "jump") {
-                    address = addr
-                    k
+        @JvmStatic
+        @Contract(pure = true)
+        fun <B, C, T> DOO(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.O<B, Parameter.O<C, Return<T>>>>,
+                Reference.D,
+                Reference.O<B>,
+                Reference.O<C>,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.O<B, Parameter.O<C, Return<T>>>> =
+            param.d { self, a ->
+                o { b ->
+                    o { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
                 }
             }
-        }
-    }
 
-    @JvmStatic
-    fun jumpScope(scope: JumpHandle.() -> IntoContinuation): Closure = object : FactoryClosure() {
-        private val addressRegister = VarRegister<Continuation?>()
-        override fun close(
-            name: String?,
-            k: Continuation,
-        ) = scope {
-            val handle = JumpHandle(
-                addressRegister,
-                name,
-                k,
-            )
-            val process = scope(handle).intoContinuation()
-            val address by bind(addressRegister) { null }
-            val fiber by bind(fiberRegister) { Fiber(process) }
-            Closure { name, k ->
-                Continuation(name ?: "jump") { self ->
-                    val fiber = fiber
-                    Fiber.SUBSCHEDULE(fiber)
-                    address ?: if (fiber.state === Fiber.State.FINISHED) k
-                    else self
+        @JvmStatic
+        @Contract(pure = true)
+        fun <B, C, T> IOO(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.O<B, Parameter.O<C, Return<T>>>>,
+                Reference.I,
+                Reference.O<B>,
+                Reference.O<C>,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.O<B, Parameter.O<C, Return<T>>>> =
+            param.i { self, a ->
+                o { b ->
+                    o { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
                 }
             }
-        }.close(name, k)
-    }
 
-    //
-    // async
-    //
-
-    interface SpawnableClosure : Closure {
-        fun bindRegister(register: Consumer<Fiber>): Closure
-        operator fun invoke(register: Consumer<Fiber>) = bindRegister(register)
-    }
-
-    @JvmStatic
-    @OptIn(ExperimentalContracts::class)
-    inline fun async(
-        scheduler: Supplier<Scheduler>,
-        register: Consumer<Fiber>,
-        withEnv: Env.() -> IntoContinuation,
-    ): Closure {
-        contract {
-            callsInPlace(withEnv, InvocationKind.EXACTLY_ONCE)
-        }
-        val env = Env()
-        val withEnv = withEnv(env).intoContinuation()
-        val inner = env.compose(withEnv)
-
-        // has no registers
-        return if (inner == withEnv) exec {
-            register.accept(scheduler.get().schedule(inner))
-        }
-        // has registers
-        else exec {
-            register.accept(scheduler.get().schedule(inner).also(Fiber::SUBSCHEDULE))
-        }
-    }
-
-    @JvmStatic
-    @OptIn(ExperimentalContracts::class)
-    inline fun async(
-        register: Consumer<Fiber>,
-        withEnv: Env.() -> IntoContinuation,
-    ): Closure {
-        contract {
-            callsInPlace(withEnv, InvocationKind.EXACTLY_ONCE)
-        }
-        return async(
-            Scheduler::currentScheduler,
-            register,
-            withEnv,
-        )
-    }
-
-    @JvmStatic
-    @OptIn(ExperimentalContracts::class)
-    inline fun async(
-        scheduler: Supplier<Scheduler>,
-        withEnv: Env.() -> IntoContinuation,
-    ): SpawnableClosure {
-        contract {
-            callsInPlace(withEnv, InvocationKind.EXACTLY_ONCE)
-        }
-        val env = Env()
-        val withEnv = withEnv(env).intoContinuation()
-        val inner = env.compose(withEnv)
-
-        val spawn = { register: Consumer<Fiber> ->
-            // has no registers
-            if (inner == withEnv) exec {
-                register.accept(scheduler.get().schedule(inner))
+        @JvmStatic
+        @Contract(pure = true)
+        fun <B, C, T> BOO(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.O<B, Parameter.O<C, Return<T>>>>,
+                Reference.B,
+                Reference.O<B>,
+                Reference.O<C>,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.O<B, Parameter.O<C, Return<T>>>> =
+            param.b { self, a ->
+                o { b ->
+                    o { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
             }
-            // has registers
-            else exec {
-                register.accept(scheduler.get().schedule(inner).also(Fiber::SUBSCHEDULE))
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, C, T> ODO(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.D<Parameter.O<C, Return<T>>>>,
+                Reference.O<A>,
+                Reference.D,
+                Reference.O<C>,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.D<Parameter.O<C, Return<T>>>> =
+            param.o { self, a ->
+                d { b ->
+                    o { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
             }
-        }
-        val boundSpawn = spawn {}
 
-        return object : SpawnableClosure {
-            override fun close(
-                name: String?,
-                k: Continuation,
-            ) = boundSpawn.close(name, k)
+        @JvmStatic
+        @Contract(pure = true)
+        fun <C, T> DDO(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.D<Parameter.O<C, Return<T>>>>,
+                Reference.D,
+                Reference.D,
+                Reference.O<C>,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.D<Parameter.O<C, Return<T>>>> =
+            param.d { self, a ->
+                d { b ->
+                    o { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
 
-            override fun bindRegister(register: Consumer<Fiber>) = spawn(register)
-        }
+        @JvmStatic
+        @Contract(pure = true)
+        fun <C, T> IDO(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.D<Parameter.O<C, Return<T>>>>,
+                Reference.I,
+                Reference.D,
+                Reference.O<C>,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.D<Parameter.O<C, Return<T>>>> =
+            param.i { self, a ->
+                d { b ->
+                    o { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <C, T> BDO(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.D<Parameter.O<C, Return<T>>>>,
+                Reference.B,
+                Reference.D,
+                Reference.O<C>,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.D<Parameter.O<C, Return<T>>>> =
+            param.b { self, a ->
+                d { b ->
+                    o { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, C, T> OIO(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.I<Parameter.O<C, Return<T>>>>,
+                Reference.O<A>,
+                Reference.I,
+                Reference.O<C>,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.I<Parameter.O<C, Return<T>>>> =
+            param.o { self, a ->
+                i { b ->
+                    o { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <C, T> DIO(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.I<Parameter.O<C, Return<T>>>>,
+                Reference.D,
+                Reference.I,
+                Reference.O<C>,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.I<Parameter.O<C, Return<T>>>> =
+            param.d { self, a ->
+                i { b ->
+                    o { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <C, T> IIO(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.I<Parameter.O<C, Return<T>>>>,
+                Reference.I,
+                Reference.I,
+                Reference.O<C>,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.I<Parameter.O<C, Return<T>>>> =
+            param.i { self, a ->
+                i { b ->
+                    o { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <C, T> BIO(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.I<Parameter.O<C, Return<T>>>>,
+                Reference.B,
+                Reference.I,
+                Reference.O<C>,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.I<Parameter.O<C, Return<T>>>> =
+            param.b { self, a ->
+                i { b ->
+                    o { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, C, T> OBO(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.B<Parameter.O<C, Return<T>>>>,
+                Reference.O<A>,
+                Reference.B,
+                Reference.O<C>,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.B<Parameter.O<C, Return<T>>>> =
+            param.o { self, a ->
+                b { b ->
+                    o { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <C, T> DBO(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.B<Parameter.O<C, Return<T>>>>,
+                Reference.D,
+                Reference.B,
+                Reference.O<C>,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.B<Parameter.O<C, Return<T>>>> =
+            param.d { self, a ->
+                b { b ->
+                    o { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <C, T> IBO(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.B<Parameter.O<C, Return<T>>>>,
+                Reference.I,
+                Reference.B,
+                Reference.O<C>,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.B<Parameter.O<C, Return<T>>>> =
+            param.i { self, a ->
+                b { b ->
+                    o { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <C, T> BBO(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.B<Parameter.O<C, Return<T>>>>,
+                Reference.B,
+                Reference.B,
+                Reference.O<C>,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.B<Parameter.O<C, Return<T>>>> =
+            param.b { self, a ->
+                b { b ->
+                    o { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, T> OD(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.D<Return<T>>>,
+                Reference.O<A>,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.D<Return<T>>> =
+            param.o { self, a ->
+                d { b ->
+                    body {
+                        f(self, a, b)
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> DD(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.D<Return<T>>>,
+                Reference.D,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.D<Return<T>>> =
+            param.d { self, a ->
+                d { b ->
+                    body {
+                        f(self, a, b)
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> ID(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.D<Return<T>>>,
+                Reference.I,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.D<Return<T>>> =
+            param.i { self, a ->
+                d { b ->
+                    body {
+                        f(self, a, b)
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> BD(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.D<Return<T>>>,
+                Reference.B,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.D<Return<T>>> =
+            param.b { self, a ->
+                d { b ->
+                    body {
+                        f(self, a, b)
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, B, T> OOD(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.O<B, Parameter.D<Return<T>>>>,
+                Reference.O<A>,
+                Reference.O<B>,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.O<B, Parameter.D<Return<T>>>> =
+            param.o { self, a ->
+                o { b ->
+                    d { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <B, T> DOD(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.O<B, Parameter.D<Return<T>>>>,
+                Reference.D,
+                Reference.O<B>,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.O<B, Parameter.D<Return<T>>>> =
+            param.d { self, a ->
+                o { b ->
+                    d { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <B, T> IOD(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.O<B, Parameter.D<Return<T>>>>,
+                Reference.I,
+                Reference.O<B>,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.O<B, Parameter.D<Return<T>>>> =
+            param.i { self, a ->
+                o { b ->
+                    d { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <B, T> BOD(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.O<B, Parameter.D<Return<T>>>>,
+                Reference.B,
+                Reference.O<B>,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.O<B, Parameter.D<Return<T>>>> =
+            param.b { self, a ->
+                o { b ->
+                    d { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, T> ODD(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.D<Parameter.D<Return<T>>>>,
+                Reference.O<A>,
+                Reference.D,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.D<Parameter.D<Return<T>>>> =
+            param.o { self, a ->
+                d { b ->
+                    d { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> DDD(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.D<Parameter.D<Return<T>>>>,
+                Reference.D,
+                Reference.D,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.D<Parameter.D<Return<T>>>> =
+            param.d { self, a ->
+                d { b ->
+                    d { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> IDD(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.D<Parameter.D<Return<T>>>>,
+                Reference.I,
+                Reference.D,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.D<Parameter.D<Return<T>>>> =
+            param.i { self, a ->
+                d { b ->
+                    d { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> BDD(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.D<Parameter.D<Return<T>>>>,
+                Reference.B,
+                Reference.D,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.D<Parameter.D<Return<T>>>> =
+            param.b { self, a ->
+                d { b ->
+                    d { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, T> OID(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.I<Parameter.D<Return<T>>>>,
+                Reference.O<A>,
+                Reference.I,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.I<Parameter.D<Return<T>>>> =
+            param.o { self, a ->
+                i { b ->
+                    d { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> DID(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.I<Parameter.D<Return<T>>>>,
+                Reference.D,
+                Reference.I,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.I<Parameter.D<Return<T>>>> =
+            param.d { self, a ->
+                i { b ->
+                    d { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> IID(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.I<Parameter.D<Return<T>>>>,
+                Reference.I,
+                Reference.I,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.I<Parameter.D<Return<T>>>> =
+            param.i { self, a ->
+                i { b ->
+                    d { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> BID(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.I<Parameter.D<Return<T>>>>,
+                Reference.B,
+                Reference.I,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.I<Parameter.D<Return<T>>>> =
+            param.b { self, a ->
+                i { b ->
+                    d { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, T> OBD(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.B<Parameter.D<Return<T>>>>,
+                Reference.O<A>,
+                Reference.B,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.B<Parameter.D<Return<T>>>> =
+            param.o { self, a ->
+                b { b ->
+                    d { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> DBD(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.B<Parameter.D<Return<T>>>>,
+                Reference.D,
+                Reference.B,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.B<Parameter.D<Return<T>>>> =
+            param.d { self, a ->
+                b { b ->
+                    d { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> IBD(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.B<Parameter.D<Return<T>>>>,
+                Reference.I,
+                Reference.B,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.B<Parameter.D<Return<T>>>> =
+            param.i { self, a ->
+                b { b ->
+                    d { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> BBD(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.B<Parameter.D<Return<T>>>>,
+                Reference.B,
+                Reference.B,
+                Reference.D,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.B<Parameter.D<Return<T>>>> =
+            param.b { self, a ->
+                b { b ->
+                    d { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, T> OI(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.I<Return<T>>>,
+                Reference.O<A>,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.I<Return<T>>> =
+            param.o { self, a ->
+                i { b ->
+                    body {
+                        f(self, a, b)
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> DI(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.I<Return<T>>>,
+                Reference.D,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.I<Return<T>>> =
+            param.d { self, a ->
+                i { b ->
+                    body {
+                        f(self, a, b)
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> II(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.I<Return<T>>>,
+                Reference.I,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.I<Return<T>>> =
+            param.i { self, a ->
+                i { b ->
+                    body {
+                        f(self, a, b)
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> BI(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.I<Return<T>>>,
+                Reference.B,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.I<Return<T>>> =
+            param.b { self, a ->
+                i { b ->
+                    body {
+                        f(self, a, b)
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, B, T> OOI(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.O<B, Parameter.I<Return<T>>>>,
+                Reference.O<A>,
+                Reference.O<B>,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.O<B, Parameter.I<Return<T>>>> =
+            param.o { self, a ->
+                o { b ->
+                    i { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <B, T> DOI(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.O<B, Parameter.I<Return<T>>>>,
+                Reference.D,
+                Reference.O<B>,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.O<B, Parameter.I<Return<T>>>> =
+            param.d { self, a ->
+                o { b ->
+                    i { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <B, T> IOI(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.O<B, Parameter.I<Return<T>>>>,
+                Reference.I,
+                Reference.O<B>,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.O<B, Parameter.I<Return<T>>>> =
+            param.i { self, a ->
+                o { b ->
+                    i { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <B, T> BOI(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.O<B, Parameter.I<Return<T>>>>,
+                Reference.B,
+                Reference.O<B>,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.O<B, Parameter.I<Return<T>>>> =
+            param.b { self, a ->
+                o { b ->
+                    i { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, T> ODI(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.D<Parameter.I<Return<T>>>>,
+                Reference.O<A>,
+                Reference.D,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.D<Parameter.I<Return<T>>>> =
+            param.o { self, a ->
+                d { b ->
+                    i { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> DDI(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.D<Parameter.I<Return<T>>>>,
+                Reference.D,
+                Reference.D,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.D<Parameter.I<Return<T>>>> =
+            param.d { self, a ->
+                d { b ->
+                    i { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> IDI(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.D<Parameter.I<Return<T>>>>,
+                Reference.I,
+                Reference.D,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.D<Parameter.I<Return<T>>>> =
+            param.i { self, a ->
+                d { b ->
+                    i { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> BDI(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.D<Parameter.I<Return<T>>>>,
+                Reference.B,
+                Reference.D,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.D<Parameter.I<Return<T>>>> =
+            param.b { self, a ->
+                d { b ->
+                    i { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, T> OII(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.I<Parameter.I<Return<T>>>>,
+                Reference.O<A>,
+                Reference.I,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.I<Parameter.I<Return<T>>>> =
+            param.o { self, a ->
+                i { b ->
+                    i { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> DII(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.I<Parameter.I<Return<T>>>>,
+                Reference.D,
+                Reference.I,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.I<Parameter.I<Return<T>>>> =
+            param.d { self, a ->
+                i { b ->
+                    i { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> III(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.I<Parameter.I<Return<T>>>>,
+                Reference.I,
+                Reference.I,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.I<Parameter.I<Return<T>>>> =
+            param.i { self, a ->
+                i { b ->
+                    i { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> BII(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.I<Parameter.I<Return<T>>>>,
+                Reference.B,
+                Reference.I,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.I<Parameter.I<Return<T>>>> =
+            param.b { self, a ->
+                i { b ->
+                    i { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, T> OBI(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.B<Parameter.I<Return<T>>>>,
+                Reference.O<A>,
+                Reference.B,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.B<Parameter.I<Return<T>>>> =
+            param.o { self, a ->
+                b { b ->
+                    i { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> DBI(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.B<Parameter.I<Return<T>>>>,
+                Reference.D,
+                Reference.B,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.B<Parameter.I<Return<T>>>> =
+            param.d { self, a ->
+                b { b ->
+                    i { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> IBI(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.B<Parameter.I<Return<T>>>>,
+                Reference.I,
+                Reference.B,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.B<Parameter.I<Return<T>>>> =
+            param.i { self, a ->
+                b { b ->
+                    i { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> BBI(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.B<Parameter.I<Return<T>>>>,
+                Reference.B,
+                Reference.B,
+                Reference.I,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.B<Parameter.I<Return<T>>>> =
+            param.b { self, a ->
+                b { b ->
+                    i { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, T> OB(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.B<Return<T>>>,
+                Reference.O<A>,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.B<Return<T>>> =
+            param.o { self, a ->
+                b { b ->
+                    body {
+                        f(self, a, b)
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> DB(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.B<Return<T>>>,
+                Reference.D,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.B<Return<T>>> =
+            param.d { self, a ->
+                b { b ->
+                    body {
+                        f(self, a, b)
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> IB(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.B<Return<T>>>,
+                Reference.I,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.B<Return<T>>> =
+            param.i { self, a ->
+                b { b ->
+                    body {
+                        f(self, a, b)
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> BB(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.B<Return<T>>>,
+                Reference.B,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.B<Return<T>>> =
+            param.b { self, a ->
+                b { b ->
+                    body {
+                        f(self, a, b)
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, B, T> OOB(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.O<B, Parameter.B<Return<T>>>>,
+                Reference.O<A>,
+                Reference.O<B>,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.O<B, Parameter.B<Return<T>>>> =
+            param.o { self, a ->
+                o { b ->
+                    b { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <B, T> DOB(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.O<B, Parameter.B<Return<T>>>>,
+                Reference.D,
+                Reference.O<B>,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.O<B, Parameter.B<Return<T>>>> =
+            param.d { self, a ->
+                o { b ->
+                    b { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <B, T> IOB(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.O<B, Parameter.B<Return<T>>>>,
+                Reference.I,
+                Reference.O<B>,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.O<B, Parameter.B<Return<T>>>> =
+            param.i { self, a ->
+                o { b ->
+                    b { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <B, T> BOB(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.O<B, Parameter.B<Return<T>>>>,
+                Reference.B,
+                Reference.O<B>,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.O<B, Parameter.B<Return<T>>>> =
+            param.b { self, a ->
+                o { b ->
+                    b { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, T> ODB(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.D<Parameter.B<Return<T>>>>,
+                Reference.O<A>,
+                Reference.D,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.D<Parameter.B<Return<T>>>> =
+            param.o { self, a ->
+                d { b ->
+                    b { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> DDB(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.D<Parameter.B<Return<T>>>>,
+                Reference.D,
+                Reference.D,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.D<Parameter.B<Return<T>>>> =
+            param.d { self, a ->
+                d { b ->
+                    b { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> IDB(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.D<Parameter.B<Return<T>>>>,
+                Reference.I,
+                Reference.D,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.D<Parameter.B<Return<T>>>> =
+            param.i { self, a ->
+                d { b ->
+                    b { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> BDB(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.D<Parameter.B<Return<T>>>>,
+                Reference.B,
+                Reference.D,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.D<Parameter.B<Return<T>>>> =
+            param.b { self, a ->
+                d { b ->
+                    b { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, T> OIB(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.I<Parameter.B<Return<T>>>>,
+                Reference.O<A>,
+                Reference.I,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.I<Parameter.B<Return<T>>>> =
+            param.o { self, a ->
+                i { b ->
+                    b { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> DIB(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.I<Parameter.B<Return<T>>>>,
+                Reference.D,
+                Reference.I,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.I<Parameter.B<Return<T>>>> =
+            param.d { self, a ->
+                i { b ->
+                    b { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> IIB(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.I<Parameter.B<Return<T>>>>,
+                Reference.I,
+                Reference.I,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.I<Parameter.B<Return<T>>>> =
+            param.i { self, a ->
+                i { b ->
+                    b { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> BIB(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.I<Parameter.B<Return<T>>>>,
+                Reference.B,
+                Reference.I,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.I<Parameter.B<Return<T>>>> =
+            param.b { self, a ->
+                i { b ->
+                    b { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <A, T> OBB(
+            f: Expression<*>.(
+                self: Parameter.O<A, Parameter.B<Parameter.B<Return<T>>>>,
+                Reference.O<A>,
+                Reference.B,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.O<A, Parameter.B<Parameter.B<Return<T>>>> =
+            param.o { self, a ->
+                b { b ->
+                    b { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> DBB(
+            f: Expression<*>.(
+                self: Parameter.D<Parameter.B<Parameter.B<Return<T>>>>,
+                Reference.D,
+                Reference.B,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.D<Parameter.B<Parameter.B<Return<T>>>> =
+            param.d { self, a ->
+                b { b ->
+                    b { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> IBB(
+            f: Expression<*>.(
+                self: Parameter.I<Parameter.B<Parameter.B<Return<T>>>>,
+                Reference.I,
+                Reference.B,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.I<Parameter.B<Parameter.B<Return<T>>>> =
+            param.i { self, a ->
+                b { b ->
+                    b { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <T> BBB(
+            f: Expression<*>.(
+                self: Parameter.B<Parameter.B<Parameter.B<Return<T>>>>,
+                Reference.B,
+                Reference.B,
+                Reference.B,
+            ) -> Builder<T>,
+        ): Parameter.B<Parameter.B<Parameter.B<Return<T>>>> =
+            param.b { self, a ->
+                b { b ->
+                    b { c ->
+                        body {
+                            f(self, a, b, c)
+                        }
+                    }
+                }
+            }
     }
-
-    @JvmStatic
-    @OptIn(ExperimentalContracts::class)
-    inline fun async(
-        withEnv: Env.() -> IntoContinuation,
-    ): SpawnableClosure {
-        contract {
-            callsInPlace(withEnv, InvocationKind.EXACTLY_ONCE)
-        }
-        return async(
-            Scheduler::currentScheduler,
-            withEnv,
-        )
-    }
-
-    @JvmStatic
-    fun await(register: Supplier<Fiber>) = waitUntil { register.get().state.finished }
-
-    @JvmStatic
-    fun cancel(register: Supplier<Fiber>) = exec { Fiber.INTERRUPT(register.get()) }
 }
