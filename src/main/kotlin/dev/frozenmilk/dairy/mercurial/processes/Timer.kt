@@ -84,15 +84,16 @@ sealed class Timer<T>(
         end,
         message,
     ) {
-        override val k = object : Continuation {
-            override fun eval() = run {
-                if (end.hasPassedNow()) {
-                    destination.send(this@Start)
-                    Fiber.current.returnRegister.o = message
-                    Halt
-                } else this
+        override val k
+            get() = object : Continuation {
+                override fun eval() = run {
+                    if (end.hasPassedNow()) {
+                        destination.send(this@Start)
+                        Fiber.current.returnRegister.o = message
+                        Halt
+                    } else this
+                }
             }
-        }
     }
 
     private class SendAfter<T : Any>(
@@ -103,14 +104,15 @@ sealed class Timer<T>(
         end,
         message,
     ) {
-        override val k = object : Continuation {
-            override fun eval() = run {
-                if (end.hasPassedNow()) {
-                    destination.send(message)
-                    Fiber.current.returnRegister.o = message
-                    Halt
-                } else this
+        override val k
+            get() = object : Continuation {
+                override fun eval() = run {
+                    if (end.hasPassedNow()) {
+                        destination.send(message)
+                        Fiber.current.returnRegister.o = message
+                        Halt
+                    } else this
+                }
             }
-        }
     }
 }
