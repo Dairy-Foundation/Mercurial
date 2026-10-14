@@ -17,7 +17,6 @@ import dev.frozenmilk.dairy.mercurial.processes.Scheduler
 import org.junit.Before
 import org.junit.Test
 import kotlin.time.Duration.Companion.seconds
-import kotlin.time.TimeMark
 import kotlin.time.TimeSource
 import kotlin.time.measureTime
 
@@ -68,7 +67,6 @@ class SimpleTests {
 
     @Test
     fun b() {
-        var mark: TimeMark = TimeSource.Monotonic.markNow()
         val pingChannel = Channel.queue<Unit>()
         val pongChannel = Channel.queue<Unit>()
 
@@ -134,7 +132,7 @@ class SimpleTests {
         println("count: $count")
     }
 
-    @Test
+    @Test(expected = IllegalStateException::class)
     fun c() {
         Mercurial.initialiseThread(
             Mercurial.Settings(
