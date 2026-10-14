@@ -1,12 +1,13 @@
 package dev.frozenmilk.dairy.mercurial.environments
 
 import dev.frozenmilk.dairy.mercurial.continuations.Continuation
+import dev.frozenmilk.dairy.mercurial.processes.Fiber
 import dev.frozenmilk.util.collections.Cons
 
 class SpaghettiStack(
     var trace: Cons<StackTraceElement>?,
     val captured: SpaghettiStack?,
-    val actual: Continuation.Function.Actual?,
+    val function: Continuation.Function?,
     var k: Continuation,
 ) {
     constructor(k: Continuation) : this(
@@ -15,10 +16,13 @@ class SpaghettiStack(
         null,
         k,
     )
-    constructor(trace: Cons<StackTraceElement>?, fn: Continuation.Function) : this(
+    constructor(
+        trace: Cons<StackTraceElement>?,
+        fn: Continuation.Function,
+    ) : this(
         trace,
-        fn.captured,
-        fn.actual,
+        if (fn.capturing) Fiber.current.frame else null,
+        fn,
         fn.body,
     ) {
         oReserve(fn.oSize)

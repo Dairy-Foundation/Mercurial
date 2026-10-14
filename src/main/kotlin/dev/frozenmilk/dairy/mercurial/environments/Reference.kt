@@ -12,7 +12,7 @@ import java.util.function.Supplier
 import kotlin.reflect.KProperty
 
 sealed class Reference(
-    val actual: Continuation.Function.Actual,
+    val function: Continuation.Function,
     val offset: Int,
 ) {
     @get:JvmName("name")
@@ -21,7 +21,7 @@ sealed class Reference(
 
     private tailrec fun frame(frame: SpaghettiStack?): SpaghettiStack =
         if (frame === null) throw IllegalStateException("Attempted to access illegal reference $this")
-        else if (frame.actual === actual) frame
+        else if (frame.function === function) frame
         else frame(frame.captured)
 
     protected val frame
@@ -29,9 +29,9 @@ sealed class Reference(
 
     @Suppress("UNCHECKED_CAST")
     class O<T>(
-        actual: Continuation.Function.Actual,
+        function: Continuation.Function,
         offset: Int,
-    ) : Reference(actual, offset), Supplier<T>, Consumer<T> {
+    ) : Reference(function, offset), Supplier<T>, Consumer<T> {
         fun named(name: String) = this.also {
             this.name = name
         }
@@ -74,9 +74,9 @@ sealed class Reference(
     }
 
     class D(
-        actual: Continuation.Function.Actual,
+        function: Continuation.Function,
         offset: Int,
-    ) : Reference(actual, offset), DoubleSupplier, DoubleConsumer {
+    ) : Reference(function, offset), DoubleSupplier, DoubleConsumer {
         fun named(name: String) = this.also {
             this.name = name
         }
@@ -120,9 +120,9 @@ sealed class Reference(
     }
 
     class I(
-        actual: Continuation.Function.Actual,
+        function: Continuation.Function,
         offset: Int,
-    ) : Reference(actual, offset), IntSupplier, IntConsumer {
+    ) : Reference(function, offset), IntSupplier, IntConsumer {
         fun named(name: String) = this.also {
             this.name = name
         }
@@ -166,9 +166,9 @@ sealed class Reference(
     }
 
     class B(
-        actual: Continuation.Function.Actual,
+        function: Continuation.Function,
         offset: Int,
-    ) : Reference(actual, offset), BooleanSupplier {
+    ) : Reference(function, offset), BooleanSupplier {
         fun named(name: String) = this.also {
             this.name = name
         }

@@ -17,8 +17,8 @@ sealed class LambdaBuilder<L : Lambda<L>>(
         override fun eval() = throw IllegalStateException()
     }
 
-    protected val actual: Continuation.Function.Actual =
-        parent?.actual ?: traced { trace -> Continuation.Function.Actual(trace + null, Unresolved) }
+    protected val function: Continuation.Function =
+        parent?.function ?: traced { trace -> Continuation.Function(trace + null, false, Unresolved) }
     abstract val lambda: L
     private var child: LambdaBuilder<*>? = null
 
@@ -38,7 +38,7 @@ sealed class LambdaBuilder<L : Lambda<L>>(
 
     class O<T, K : Lambda<K>> : ParameterBuilder<Parameter.O<T, K>> {
         override val lambda: Parameter.O<T, K>
-        val reference = this.actual.let { _fn ->
+        val reference = this.function.let { _fn ->
             Reference.O<T>(_fn, _fn.oSize++)
         }
 
@@ -56,7 +56,7 @@ sealed class LambdaBuilder<L : Lambda<L>>(
 
     class D<K : Lambda<K>> : ParameterBuilder<Parameter.D<K>> {
         override val lambda: Parameter.D<K>
-        val reference = this.actual.let { _fn ->
+        val reference = this.function.let { _fn ->
             Reference.D(_fn, _fn.dSize++)
         }
 
@@ -74,7 +74,7 @@ sealed class LambdaBuilder<L : Lambda<L>>(
 
     class I<K : Lambda<K>> : ParameterBuilder<Parameter.I<K>> {
         override val lambda: Parameter.I<K>
-        val reference = this.actual.let { _fn ->
+        val reference = this.function.let { _fn ->
             Reference.I(_fn, _fn.iSize++)
         }
 
@@ -92,7 +92,7 @@ sealed class LambdaBuilder<L : Lambda<L>>(
 
     class B<K : Lambda<K>> : ParameterBuilder<Parameter.B<K>> {
         override val lambda: Parameter.B<K>
-        val reference = this.actual.let { _fn ->
+        val reference = this.function.let { _fn ->
             Reference.B(_fn, _fn.bSize++)
         }
 

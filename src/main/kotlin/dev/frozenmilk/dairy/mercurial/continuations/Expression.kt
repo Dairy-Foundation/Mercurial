@@ -6,7 +6,6 @@ import dev.frozenmilk.dairy.mercurial.continuations.Continuations.value
 import dev.frozenmilk.dairy.mercurial.continuations.Continuations.noop
 import dev.frozenmilk.dairy.mercurial.environments.Reference
 import dev.frozenmilk.dairy.mercurial.getValue
-import dev.frozenmilk.dairy.mercurial.processes.Fiber
 import dev.frozenmilk.dairy.mercurial.setValue
 import dev.frozenmilk.dairy.mercurial.Tracing.untraced
 
@@ -23,21 +22,25 @@ class Expression<T> : LambdaBuilder<Return<T>> {
     private val _body: Lazy<Builder<T>>
 
     private fun compileActual() = run {
-        if (actual.body === Unresolved) {
-            actual.body = Resolving
-            actual.body = _body.value.compile(null, Continuation.Halt)
+        if (function.body === Unresolved) {
+            function.body = Resolving
+            // TODO: set up scope again, so that lazier constructions know they are in a scope
+            val scope = scope
+            try {
+                Expression.scope = this
+                function.body = _body.value.compile(null, Continuation.Halt)
+                function.capturing = enclosingScope !== null
+            } finally {
+                Expression.scope = scope
+            }
         }
-        actual
+        function
     }
 
     private val enclosingScope: Expression<*>? = scope
     override val lambda: Return<T> = Return(
         noop,
-        if (enclosingScope === null) ::compileActual
-        else {
-            val ref = enclosingScope.o { Fiber.current.frame };
-            { Continuation.Function.Closure(ref, compileActual()) }
-        },
+        ::compileActual,
     )
 
     constructor(parent: LambdaBuilder<*>, f: Expression<T>.() -> Builder<T>) : super(parent) {
@@ -94,7 +97,7 @@ class Expression<T> : LambdaBuilder<Return<T>> {
     //
 
     fun <U> o(value: Builder<U>): Reference.O<U> = traced {
-        Reference.O<U>(actual, actual.oSize++).also {
+        Reference.O<U>(function, function.oSize++).also {
             state = state.then(value.then(Continuation.Store.Stack.o))
         }
     }
@@ -104,7 +107,7 @@ class Expression<T> : LambdaBuilder<Return<T>> {
     }
 
     fun d(value: Builder<Double>) = traced {
-        Reference.D(actual, actual.dSize++).also {
+        Reference.D(function, function.dSize++).also {
             state = state.then(value.then(Continuation.Store.Stack.d))
         }
     }
@@ -114,7 +117,7 @@ class Expression<T> : LambdaBuilder<Return<T>> {
     }
 
     fun i(value: Builder<Int>) = traced {
-        Reference.I(actual, actual.iSize++).also {
+        Reference.I(function, function.iSize++).also {
             state = state.then(value.then(Continuation.Store.Stack.i))
         }
     }
@@ -124,7 +127,7 @@ class Expression<T> : LambdaBuilder<Return<T>> {
     }
 
     fun b(value: Builder<Boolean>) = traced {
-        Reference.B(actual, actual.bSize++).also {
+        Reference.B(function, function.bSize++).also {
             state = state.then(value.then(Continuation.Store.Stack.b))
         }
     }

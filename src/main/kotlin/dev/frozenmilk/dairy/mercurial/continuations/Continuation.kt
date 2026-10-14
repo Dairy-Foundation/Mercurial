@@ -8,7 +8,6 @@ import dev.frozenmilk.dairy.mercurial.Mercurial
 import dev.frozenmilk.dairy.mercurial.Tracing.plus
 import dev.frozenmilk.dairy.mercurial.continuations.Continuations.match
 import dev.frozenmilk.dairy.mercurial.continuations.PredicateChain.Companion.compile
-import dev.frozenmilk.dairy.mercurial.environments.Reference
 import dev.frozenmilk.dairy.mercurial.environments.SpaghettiStack
 import dev.frozenmilk.dairy.mercurial.processes.Fiber
 import dev.frozenmilk.dairy.mercurial.processes.Spawnable
@@ -590,55 +589,20 @@ interface Continuation {
         }
     }
 
-    sealed class Function {
-        // actual
-        abstract val actual: Actual
-
-        // closure captured stack
-        abstract val captured: SpaghettiStack?
-
-        abstract val trace: Cons<StackTraceElement>?
-
-        // body
-        abstract val body: Continuation
-
+    class Function(
+        val trace: Cons<StackTraceElement>?,
+        var capturing: Boolean,
+        var body: Continuation,
+    ) {
         // sizes
-        abstract val oSize: Int
-        abstract val dSize: Int
-        abstract val iSize: Int
-        abstract val bSize: Int
-        abstract val isEmpty: Boolean
-
-        data class Actual(
-            override val trace: Cons<StackTraceElement>?,
-            override var body: Continuation,
-        ) : Function() {
-            override val actual = this
-            override val captured = null
-            override var oSize: Int = 0
-            override var dSize: Int = 0
-            override var iSize: Int = 0
-            override var bSize: Int = 0
-            override val isEmpty: Boolean
-                get() = oSize == 0
-                    && dSize == 0
-                    && iSize == 0
-                    && bSize == 0
-        }
-
-        data class Closure(
-            val ref: Reference.O<SpaghettiStack?>,
-            override val actual: Actual,
-        ) : Function() {
-            override val captured: SpaghettiStack?
-                get() = ref.get()
-            override val trace by actual::trace
-            override val body by actual::body
-            override val oSize by actual::oSize
-            override val dSize by actual::dSize
-            override val iSize by actual::iSize
-            override val bSize by actual::bSize
-            override val isEmpty by actual::isEmpty
-        }
+        var oSize: Int = 0
+        var dSize: Int = 0
+        var iSize: Int = 0
+        var bSize: Int = 0
+        val isEmpty: Boolean
+            get() = oSize == 0
+                && dSize == 0
+                && iSize == 0
+                && bSize == 0
     }
 }
