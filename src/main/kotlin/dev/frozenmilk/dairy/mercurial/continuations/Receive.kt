@@ -5,6 +5,7 @@ import dev.frozenmilk.dairy.mercurial.continuations.Continuation.Receive
 import dev.frozenmilk.dairy.mercurial.continuations.Continuations.exec
 import dev.frozenmilk.dairy.mercurial.continuations.Continuations.expression
 import dev.frozenmilk.dairy.mercurial.continuations.Continuations.function
+import dev.frozenmilk.dairy.mercurial.continuations.Continuations.value
 import dev.frozenmilk.dairy.mercurial.continuations.PredicateChain.Companion.link
 import dev.frozenmilk.dairy.mercurial.environments.Reference
 import dev.frozenmilk.dairy.mercurial.processes.Channel
@@ -15,6 +16,8 @@ import java.util.function.Predicate
 import java.util.function.Supplier
 import kotlin.time.TimeMark
 
+// TODO: need to be able to handle closed channels, smth like a 'all closed' case thats well supported
+//  more complex individual closes can be handled by hand
 data class Receive<T>(
     private val chain: PredicateChain.Unterminated<Nothing?, Builder<T>>?,
     private val after: After<T>?,
@@ -25,7 +28,123 @@ data class Receive<T>(
     typealias Function<MSG, T> = Parameter.O<MSG, Return<T>>
 
     @Suppress("UNCHECKED_CAST")
-    fun <MSG : Any> receive(
+    fun receive(channel: Supplier<out Channel<out T & Any>>) = Receive(
+        chain.link(
+            {
+                val msg = channel.get().poll()
+                if (msg !== null) Fiber.current.returnRegister.o = msg
+                msg !== null
+            },
+            value.o { Fiber.current.returnRegister.o as T }
+        ),
+        after,
+    )
+
+    @Suppress("UNCHECKED_CAST")
+    fun receive(channel: Channel<out T & Any>) = Receive(
+        chain.link(
+            {
+                val msg = channel.poll()
+                if (msg !== null) Fiber.current.returnRegister.o = msg
+                msg !== null
+            },
+            value.o { Fiber.current.returnRegister.o as T }
+        ),
+        after,
+    )
+
+    @Suppress("UNCHECKED_CAST")
+    fun receive(channel: Supplier<out Channel<out T & Any>>, guard: Predicate<in T & Any>) = Receive(
+        chain.link(
+            {
+                val msg = channel.get().poll()
+                if (msg !== null) Fiber.current.returnRegister.o = msg
+                msg !== null && guard.test(msg)
+            },
+            value.o { Fiber.current.returnRegister.o as T }
+        ),
+        after,
+    )
+
+    @Suppress("UNCHECKED_CAST")
+    fun receive(channel: Channel<out T & Any>, guard: Predicate<in T & Any>) = Receive(
+        chain.link(
+            {
+                val msg = channel.poll()
+                if (msg !== null) Fiber.current.returnRegister.o = msg
+                msg !== null && guard.test(msg)
+            },
+            value.o { Fiber.current.returnRegister.o as T }
+        ),
+        after,
+    )
+
+    @Suppress("UNCHECKED_CAST")
+    fun <MSG : Any> receiveMap(channel: Supplier<out Channel<MSG>>, map: (MSG) -> T) = Receive(
+        chain.link(
+            {
+                val msg = channel.get().poll()
+                if (msg !== null) Fiber.current.returnRegister.o = msg
+                msg !== null
+            },
+            value.o {
+                val msg = Fiber.current.returnRegister.o as MSG
+                map(msg)
+            },
+        ),
+        after,
+    )
+
+    @Suppress("UNCHECKED_CAST")
+    fun <MSG : Any> receiveMap(channel: Channel<MSG>, map: (MSG) -> T) = Receive(
+        chain.link(
+            {
+                val msg = channel.poll()
+                if (msg !== null) Fiber.current.returnRegister.o = msg
+                msg !== null
+            },
+            value.o {
+                val msg = Fiber.current.returnRegister.o as MSG
+                map(msg)
+            },
+        ),
+        after,
+    )
+
+    @Suppress("UNCHECKED_CAST")
+    fun <MSG : Any> receiveMap(channel: Supplier<out Channel<MSG>>, guard: Predicate<in MSG>, map: (MSG) -> T) = Receive(
+        chain.link(
+            {
+                val msg = channel.get().poll()
+                if (msg !== null) Fiber.current.returnRegister.o = msg
+                msg !== null && guard.test(msg)
+            },
+            value.o {
+                val msg = Fiber.current.returnRegister.o as MSG
+                map(msg)
+            },
+        ),
+        after,
+    )
+
+    @Suppress("UNCHECKED_CAST")
+    fun <MSG : Any> receiveMap(channel: Channel<MSG>, guard: Predicate<in MSG>, map: (MSG) -> T) = Receive(
+        chain.link(
+            {
+                val msg = channel.poll()
+                if (msg !== null) Fiber.current.returnRegister.o = msg
+                msg !== null && guard.test(msg)
+            },
+            value.o {
+                val msg = Fiber.current.returnRegister.o as MSG
+                map(msg)
+            },
+        ),
+        after,
+    )
+
+    @Suppress("UNCHECKED_CAST")
+    fun <MSG : Any> receiveFunction(
         channel: Supplier<out Channel<MSG>>,
         then: Function<MSG, T>,
     ) = Receive(
@@ -43,17 +162,17 @@ data class Receive<T>(
     fun <MSG : Any> receive(
         channel: Channel<MSG>,
         then: Function<MSG, T>,
-    ) = receive({ channel }, then)
+    ) = receiveFunction({ channel }, then)
 
-    fun <MSG : Any> receive(
+    fun <MSG : Any> receiveFunction(
         channel: Supplier<out Channel<MSG>>,
         then: Expression<*>.(Reference.O<MSG>) -> Builder<T>,
-    ) = receive(channel, function { _, msg -> then(msg) })
+    ) = receiveFunction(channel, function { _, msg -> then(msg) })
 
-    fun <MSG : Any> receive(
+    fun <MSG : Any> receiveFunction(
         channel: Channel<MSG>,
         then: Expression<*>.(Reference.O<MSG>) -> Builder<T>,
-    ) = receive({ channel }, function { _, msg -> then(msg) })
+    ) = receiveFunction({ channel }, function { _, msg -> then(msg) })
 
     fun receive(
         channel: Supplier<out Channel<*>>,
@@ -72,7 +191,7 @@ data class Receive<T>(
     ) = receive({ channel }, handler)
 
     @Suppress("UNCHECKED_CAST")
-    fun <MSG : Any> receive(
+    fun <MSG : Any> receiveFunction(
         channel: Supplier<out Channel<MSG>>,
         guard: Predicate<in MSG>,
         then: Function<MSG, T>,
@@ -93,23 +212,23 @@ data class Receive<T>(
         after,
     )
 
-    fun <MSG : Any> receive(
+    fun <MSG : Any> receiveFunction(
         channel: Channel<MSG>,
         guard: Predicate<in MSG>,
         then: Function<MSG, T>,
-    ) = receive({ channel }, guard, then)
+    ) = receiveFunction({ channel }, guard, then)
 
-    fun <MSG : Any> receive(
+    fun <MSG : Any> receiveFunction(
         channel: Supplier<out Channel<MSG>>,
         guard: Predicate<in MSG>,
         then: Expression<*>.(Reference.O<MSG>) -> Builder<T>,
-    ) = receive(channel, guard, function { _, msg -> then(msg) })
+    ) = receiveFunction(channel, guard, function { _, msg -> then(msg) })
 
-    fun <MSG : Any> receive(
+    fun <MSG : Any> receiveFunction(
         channel: Channel<MSG>,
         guard: Predicate<in MSG>,
         then: Expression<*>.(Reference.O<MSG>) -> Builder<T>,
-    ) = receive({ channel }, guard, function { _, msg -> then(msg) })
+    ) = receiveFunction({ channel }, guard, function { _, msg -> then(msg) })
 
     fun <MSG : Any> receive(
         channel: Supplier<out Channel<MSG>>,
@@ -154,7 +273,7 @@ data class Receive<T>(
         After(timeout, then),
     )
 
-    private val compiler by lazy {
+    private val compiler: Builder<T> by lazy {
         if (after === null) expression { self ->
             Receive.Builder(chain.link(self))
         }
@@ -164,11 +283,10 @@ data class Receive<T>(
                 chain.link({ timeMark.hasPassedNow() }, after.then),
                 // remove after
                 null,
-            )
+            ).compiler
         }
     }
 
-    //override fun compile(k: Continuation) = compiler.compile(k)
     override fun compile(
         trace: Cons<StackTraceElement>?,
         k: Continuation,
