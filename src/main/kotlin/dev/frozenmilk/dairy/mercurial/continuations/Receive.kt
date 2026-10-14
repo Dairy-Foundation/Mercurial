@@ -27,14 +27,47 @@ data class Receive<T>(
     data class After<T>(val timeout: Supplier<out TimeMark>, val then: Builder<T>)
     typealias Function<MSG, T> = Parameter.O<MSG, Return<T>>
 
+    private fun <T : Any> predicate(channel: Channel<out T>) =
+        Predicate<Nothing?> {
+            val msg = channel.poll()
+            if (msg !== null) Fiber.current.returnRegister.o = msg
+            msg !== null
+        }
+
+    private fun <T : Any> predicate(channel: Supplier<out Channel<out T>>) =
+        Predicate<Nothing?> {
+            val msg = channel.get().poll()
+            if (msg !== null) Fiber.current.returnRegister.o = msg
+            msg !== null
+        }
+
+    private fun <T : Any> predicate(channel: Channel<T>, guard: Predicate<in T>) =
+        Predicate<Nothing?> {
+            val msg = channel.poll()
+            if (msg !== null) {
+                val guarded = guard.test(msg)
+                if (guarded) Fiber.current.returnRegister.o = msg
+                else channel.returnToFront(msg)
+                guarded
+            } else false
+        }
+
+    private fun <T : Any> predicate(channel: Supplier<out Channel<T>>, guard: Predicate<in T>) =
+        Predicate<Nothing?> {
+            val channel = channel.get()
+            val msg = channel.poll()
+            if (msg !== null) {
+                val guarded = guard.test(msg)
+                if (guarded) Fiber.current.returnRegister.o = msg
+                else channel.returnToFront(msg)
+                guarded
+            } else false
+        }
+
     @Suppress("UNCHECKED_CAST")
     fun receive(channel: Supplier<out Channel<out T & Any>>) = Receive(
         chain.link(
-            {
-                val msg = channel.get().poll()
-                if (msg !== null) Fiber.current.returnRegister.o = msg
-                msg !== null
-            },
+            predicate(channel),
             value.o { Fiber.current.returnRegister.o as T }
         ),
         after,
@@ -43,37 +76,25 @@ data class Receive<T>(
     @Suppress("UNCHECKED_CAST")
     fun receive(channel: Channel<out T & Any>) = Receive(
         chain.link(
-            {
-                val msg = channel.poll()
-                if (msg !== null) Fiber.current.returnRegister.o = msg
-                msg !== null
-            },
+            predicate(channel),
             value.o { Fiber.current.returnRegister.o as T }
         ),
         after,
     )
 
     @Suppress("UNCHECKED_CAST")
-    fun receive(channel: Supplier<out Channel<out T & Any>>, guard: Predicate<in T & Any>) = Receive(
+    fun receive(channel: Supplier<out Channel<T & Any>>, guard: Predicate<in T & Any>) = Receive(
         chain.link(
-            {
-                val msg = channel.get().poll()
-                if (msg !== null) Fiber.current.returnRegister.o = msg
-                msg !== null && guard.test(msg)
-            },
+            predicate(channel, guard),
             value.o { Fiber.current.returnRegister.o as T }
         ),
         after,
     )
 
     @Suppress("UNCHECKED_CAST")
-    fun receive(channel: Channel<out T & Any>, guard: Predicate<in T & Any>) = Receive(
+    fun receive(channel: Channel<T & Any>, guard: Predicate<in T & Any>) = Receive(
         chain.link(
-            {
-                val msg = channel.poll()
-                if (msg !== null) Fiber.current.returnRegister.o = msg
-                msg !== null && guard.test(msg)
-            },
+            predicate(channel, guard),
             value.o { Fiber.current.returnRegister.o as T }
         ),
         after,
@@ -82,11 +103,7 @@ data class Receive<T>(
     @Suppress("UNCHECKED_CAST")
     fun <MSG : Any> receiveMap(channel: Supplier<out Channel<MSG>>, map: (MSG) -> T) = Receive(
         chain.link(
-            {
-                val msg = channel.get().poll()
-                if (msg !== null) Fiber.current.returnRegister.o = msg
-                msg !== null
-            },
+            predicate(channel),
             value.o {
                 val msg = Fiber.current.returnRegister.o as MSG
                 map(msg)
@@ -98,11 +115,7 @@ data class Receive<T>(
     @Suppress("UNCHECKED_CAST")
     fun <MSG : Any> receiveMap(channel: Channel<MSG>, map: (MSG) -> T) = Receive(
         chain.link(
-            {
-                val msg = channel.poll()
-                if (msg !== null) Fiber.current.returnRegister.o = msg
-                msg !== null
-            },
+            predicate(channel),
             value.o {
                 val msg = Fiber.current.returnRegister.o as MSG
                 map(msg)
@@ -112,13 +125,13 @@ data class Receive<T>(
     )
 
     @Suppress("UNCHECKED_CAST")
-    fun <MSG : Any> receiveMap(channel: Supplier<out Channel<MSG>>, guard: Predicate<in MSG>, map: (MSG) -> T) = Receive(
+    fun <MSG : Any> receiveMap(
+        channel: Supplier<out Channel<MSG>>,
+        guard: Predicate<in MSG>,
+        map: (MSG) -> T
+    ) = Receive(
         chain.link(
-            {
-                val msg = channel.get().poll()
-                if (msg !== null) Fiber.current.returnRegister.o = msg
-                msg !== null && guard.test(msg)
-            },
+            predicate(channel, guard),
             value.o {
                 val msg = Fiber.current.returnRegister.o as MSG
                 map(msg)
@@ -128,20 +141,17 @@ data class Receive<T>(
     )
 
     @Suppress("UNCHECKED_CAST")
-    fun <MSG : Any> receiveMap(channel: Channel<MSG>, guard: Predicate<in MSG>, map: (MSG) -> T) = Receive(
-        chain.link(
-            {
-                val msg = channel.poll()
-                if (msg !== null) Fiber.current.returnRegister.o = msg
-                msg !== null && guard.test(msg)
-            },
-            value.o {
-                val msg = Fiber.current.returnRegister.o as MSG
-                map(msg)
-            },
-        ),
-        after,
-    )
+    fun <MSG : Any> receiveMap(channel: Channel<MSG>, guard: Predicate<in MSG>, map: (MSG) -> T) =
+        Receive(
+            chain.link(
+                predicate(channel, guard),
+                value.o {
+                    val msg = Fiber.current.returnRegister.o as MSG
+                    map(msg)
+                },
+            ),
+            after,
+        )
 
     @Suppress("UNCHECKED_CAST")
     fun <MSG : Any> receiveFunction(
@@ -149,11 +159,7 @@ data class Receive<T>(
         then: Function<MSG, T>,
     ) = Receive(
         chain.link(
-            {
-                val msg = channel.get().poll()
-                if (msg !== null) Fiber.current.returnRegister.o = msg
-                msg !== null
-            },
+            predicate(channel),
             then * { Fiber.current.returnRegister.o as MSG },
         ),
         after,
@@ -197,16 +203,7 @@ data class Receive<T>(
         then: Function<MSG, T>,
     ) = Receive(
         chain.link(
-            {
-                val chan = channel.get()
-                val msg = chan.poll()
-                if (msg !== null) {
-                    val guarded = guard.test(msg)
-                    if (guarded) Fiber.current.returnRegister.o = msg
-                    else chan.prepend(msg)
-                    guarded
-                } else false
-            },
+            predicate(channel, guard),
             then * { Fiber.current.returnRegister.o as MSG },
         ),
         after,
@@ -236,15 +233,7 @@ data class Receive<T>(
         then: Builder<T>,
     ) = Receive(
         chain.link(
-            {
-                val chan = channel.get()
-                val msg = chan.poll()
-                if (msg !== null) {
-                    val guarded = guard.test(msg)
-                    if (!guarded) chan.prepend(msg)
-                    guarded
-                } else false
-            },
+            predicate(channel, guard),
             then,
         ),
         after,

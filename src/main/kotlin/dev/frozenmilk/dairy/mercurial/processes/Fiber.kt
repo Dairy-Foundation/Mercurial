@@ -10,8 +10,7 @@ import dev.frozenmilk.sinister.util.log.Logger
 import dev.frozenmilk.util.collections.Cons
 import dev.frozenmilk.util.collections.Ord
 import dev.frozenmilk.util.collections.WBT
-import java.lang.reflect.Array
-import java.util.Arrays
+import java.util.concurrent.atomic.AtomicReference
 import java.util.function.BooleanSupplier
 import java.util.function.Consumer
 import java.util.function.DoubleConsumer
@@ -32,6 +31,7 @@ class Fiber<out T> : Fiberous<T> {
         internal val rootThreadLocal: ThreadLocal<Fiber<Nothing>> = ThreadLocal.withInitial {
             throw IllegalStateException("Mercurial not initialised")
         }
+
         @JvmStatic
         @get:JvmName("root")
         val root: Fiber<Nothing> by rootThreadLocal
@@ -44,23 +44,27 @@ class Fiber<out T> : Fiberous<T> {
         }
 
         @JvmStatic
-        fun exitChannel(value: Channel<in Messages.Exit>?) {
-            current.exitChannel = value
+        fun exitChannel(channel: Channel<in Messages.Exit>?) {
+            current.exitChannel.set(channel)
         }
     }
 
     @get:JvmName("fiber")
     override val fiber = this
+
+    private val _status = AtomicReference<ProcessStatus>(ProcessStatus.alive)
+
     @get:JvmName("status")
-    var status: ProcessStatus = ProcessStatus.Alive
-        private set
+    val status: ProcessStatus
+        get() = _status.get()
 
-    private var exitChannel: Channel<in Messages.Exit>? = null
+    private val exitChannel = AtomicReference<Channel<in Messages.Exit>?>(null)
     val trappingExits
-        get() = exitChannel !== null
+        get() = exitChannel.get() !== null
 
-    private var links = Set.empty<Fiber<*>>()
-    private var monitors = Channel.Set.empty<Channel<in Messages.Down>>()
+    private val links = AtomicReference(Set.empty<Fiber<*>>())
+    private val channelLinks = AtomicReference(Channel.Set.empty<Channel<*>>())
+    private val monitors = AtomicReference(Channel.Set.empty<Channel<in Messages.Down>>())
 
     var stack: Cons<SpaghettiStack>? = null
         private set
@@ -132,6 +136,7 @@ class Fiber<out T> : Fiberous<T> {
 
     val pollDurationSeconds
         get() = pollDuration.toDouble(DurationUnit.SECONDS)
+
     fun poll(): ProcessStatus = if (status !== ProcessStatus.Alive) status
     else runInContext {
         // updates state
@@ -145,36 +150,63 @@ class Fiber<out T> : Fiberous<T> {
     fun link() {
         val self = current
         if (this === self) return
-        links = Set.add(links, self)
-        self.links = Set.add(self.links, this)
+        links.getAndUpdate { links ->
+            Set.add(links, self)
+        }
+        self.links.getAndUpdate { links ->
+            Set.add(links, this)
+        }
     }
 
     fun unlink() {
         val self = current
         if (this === self) return
-        links = Set.delete(links, self)
-        self.links = Set.delete(self.links, this)
+        links.getAndUpdate { links ->
+            Set.delete(links, self)
+        }
+        self.links.getAndUpdate { links ->
+            Set.delete(links, this)
+        }
+    }
+
+    fun link(channel: Channel<*>) {
+        channelLinks.getAndUpdate { channelLinks ->
+            Channel.Set.add(channelLinks, channel)
+        }
+    }
+
+    fun unlink(channel: Channel<*>) {
+        channelLinks.getAndUpdate { channelLinks ->
+            Channel.Set.delete(channelLinks, channel)
+        }
     }
 
     fun monitor(channel: Channel<in Messages.Down>) {
-        monitors = Channel.Set.add(monitors, channel)
+        monitors.getAndUpdate { monitors ->
+            Channel.Set.add(monitors, channel)
+        }
     }
 
     fun demonitor(channel: Channel<in Messages.Down>) {
-        monitors = Channel.Set.delete(monitors, channel)
+        monitors.getAndUpdate { monitors ->
+            Channel.Set.delete(monitors, channel)
+        }
     }
 
     fun exit(reason: ExitReason) {
-        // ignore new exits if we have already exited
-        if (!status.alive) return
         // if it's a kill, we must process it and exit
-        else if (reason === ExitReason.Kill) exitInternal(reason)
+        if (reason === ExitReason.Kill) exitInternal(reason)
         // if the signal came from in the house, we let it happen, never trap it
         else if (this === current) exitInternal(reason)
         else {
             // if trapping, send a message
-            val exitChannel = exitChannel
-            if (exitChannel !== null) exitChannel.send(Messages.Exit(current, reason))
+            val exitChannel = exitChannel.get()
+            if (exitChannel !== null && status.alive) exitChannel.send(
+                Messages.Exit(
+                    current,
+                    reason
+                )
+            )
             // otherwise exit like normal
             else exitInternal(reason)
         }
@@ -182,7 +214,8 @@ class Fiber<out T> : Fiberous<T> {
 
     private fun exitInternal(reason: ExitReason) {
         val reason = if (reason === ExitReason.Kill) ExitReason.Killed else reason
-        status = reason
+        val exited = _status.compareAndSet(ProcessStatus.Alive, reason)
+        if (!exited) return
         if (reason is ExitReason.Exceptionally) Logger.e(
             "MercurialFiber",
             "fiber exited exceptionally",
@@ -192,28 +225,27 @@ class Fiber<out T> : Fiberous<T> {
     }
 
     private fun publishExit(reason: ExitReason) {
-        val _ = Set.inorderFold(links, null as Messages.Exit?) { msg, link ->
-            if (!link.status.alive) msg
-            else {
-                val exitChannel = link.exitChannel
-                if (exitChannel !== null) {
-                    val msg = msg ?: Messages.Exit(this, reason)
-                    exitChannel.send(msg)
-                    msg
-                } else {
-                    // if it was a normal exit,
-                    // we don't propagate it
-                    if (reason !is ExitReason.Normally) link.exitInternal(reason)
-                    msg
-                }
+        val _ = Set.inorderFold(links.get(), null as Messages.Exit?) { msg, link ->
+            val exitChannel = link.exitChannel.get()
+            if (exitChannel !== null && link.status.alive) {
+                val msg = msg ?: Messages.Exit(this, reason)
+                exitChannel.send(msg)
+                msg
+            } else {
+                // if it was a normal exit,
+                // we don't propagate it
+                if (reason !is ExitReason.Normally) link.exitInternal(reason)
+                msg
             }
         }
 
-        val _ = Channel.Set.inorderFold(monitors, null as Messages.Down?) { msg, monitor ->
+        val _ = Channel.Set.inorderFold(monitors.get(), null as Messages.Down?) { msg, monitor ->
             val msg = msg ?: Messages.Down(this, reason)
             monitor.send(msg)
             msg
         }
+
+        Channel.Set.foreach(channelLinks.get(), Channel<*>::close)
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -486,9 +518,11 @@ class Fiber<out T> : Fiberous<T> {
         data object None : SpawnFlag() {
             override fun applyTo(fiber: Fiber<*>) {}
         }
+
         data object Link : SpawnFlag() {
             override fun applyTo(fiber: Fiber<*>) = fiber.link()
         }
+
         data class Monitor(val channel: Supplier<out Channel<in Messages.Down>>) : SpawnFlag() {
             override fun applyTo(fiber: Fiber<*>) = fiber.monitor(channel.get())
         }
