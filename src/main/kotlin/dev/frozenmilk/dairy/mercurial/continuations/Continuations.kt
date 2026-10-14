@@ -10,6 +10,7 @@ import dev.frozenmilk.dairy.mercurial.processes.ExitReason
 import dev.frozenmilk.dairy.mercurial.processes.Fiber
 import dev.frozenmilk.dairy.mercurial.processes.Messages
 import dev.frozenmilk.dairy.mercurial.Tracing.traced
+import dev.frozenmilk.dairy.mercurial.processes.Fiberous
 import dev.frozenmilk.util.collections.WBT
 import org.jetbrains.annotations.Contract
 import java.util.function.BooleanSupplier
@@ -442,22 +443,22 @@ object Continuations {
     }
 
     @Suppress("ClassName")
-    object await : Parameter.O<Fiber<*>, Return<Any?>>(function { _, fiber ->
-        waitUntil { !fiber().status.alive }
+    object await : Parameter.O<Fiberous<*>, Return<Any?>>(function { _, fiber ->
+        waitUntil { !fiber().fiber.status.alive }
     }) {
         @JvmField
         val exit = this
 
         @JvmField
-        val status = function<Fiber<*>, ExitReason> { _, fiber ->
-            !waitUntil { !fiber().status.alive }
-            value.o { fiber().status as ExitReason }
+        val status = function<Fiberous<*>, ExitReason> { _, fiber ->
+            !waitUntil { !fiber().fiber.status.alive }
+            value.o { fiber().fiber.status as ExitReason }
         }
 
-        private val result = function<Fiber<*>, Fiber.Result<Any?>> { _, fiber ->
-            !waitUntil { !fiber().status.alive }
+        private val result = function<Fiberous<*>, Fiber.Result<Any?>> { _, fiber ->
+            !waitUntil { !fiber().fiber.status.alive }
             value.o {
-                val fiber = fiber()
+                val fiber = fiber().fiber
                 val exitReason = fiber.status as ExitReason
                 if (exitReason is ExitReason.Normally) Fiber.Result.Ok(fiber.returnRegister.o)
                 else exitReason
@@ -467,13 +468,13 @@ object Continuations {
         @Suppress("UNCHECKED_CAST")
         @JvmStatic
         @Contract(pure = true)
-        fun <T> result() = result as O<Fiber<T>, Return<Fiber.Result<T>>>
+        fun <T> result() = result as O<Fiberous<T>, Return<Fiber.Result<T>>>
 
-        private val expect = function<Fiber<*>, Any?> { _, fiber ->
-            !waitUntil { !fiber().status.alive }
+        private val expect = function<Fiberous<*>, Any?> { _, fiber ->
+            !waitUntil { !fiber().fiber.status.alive }
             ifThen(
-                { fiber().status === ExitReason.Normally },
-                Continuation.CopyRegister.Builder(fiber)
+                { fiber().fiber.status === ExitReason.Normally },
+                Continuation.CopyRegister.Builder { fiber().fiber }
             ).elseThen(value.o {
                 throw IllegalStateException("Expected fiber ${fiber()} to exit normally")
             })
@@ -482,73 +483,73 @@ object Continuations {
         @Suppress("UNCHECKED_CAST")
         @JvmStatic
         @Contract(pure = true)
-        fun <T> expect() = expect as O<Fiber<T>, Return<T>>
+        fun <T> expect() = expect as O<Fiberous<T>, Return<T>>
 
         @JvmField
-        val all = function<WBT.Tree<out Fiber<*>>?, Any?> { _, fibers ->
-            waitUntil { Fiber.Set.all(fibers()) { !it.status.alive } }
+        val all = function<WBT.Tree<out Fiberous<*>>?, Any?> { _, fibers ->
+            waitUntil { Fiberous.Set.all(fibers()) { !it.fiber.status.alive } }
         }
 
         @JvmField
-        val any = function<WBT.Tree<out Fiber<*>>?, Any?> { _, fibers ->
-            waitUntil { Fiber.Set.any(fibers()) { !it.status.alive } }
+        val any = function<WBT.Tree<out Fiberous<*>>?, Any?> { _, fibers ->
+            waitUntil { Fiberous.Set.any(fibers()) { !it.fiber.status.alive } }
         }
     }
 
     @Suppress("ClassName")
-    object exit : Parameter.O<Fiber<*>, Parameter.O<ExitReason, Return<Any?>>>(
+    object exit : Parameter.O<Fiberous<*>, Parameter.O<ExitReason, Return<Any?>>>(
         function { _, fiber, exitReason ->
-            exec { fiber().exit(exitReason()) }
+            exec { fiber().fiber.exit(exitReason()) }
         }
     ) {
         @JvmField
         val one = this
 
         @JvmField
-        val all = function<WBT.Tree<out Fiber<*>>?, ExitReason, Any?> { _, fibers, exitReason ->
+        val all = function<WBT.Tree<out Fiberous<*>>?, ExitReason, Any?> { _, fibers, exitReason ->
             exec {
                 val exitReason = exitReason()
-                Fiber.Set.foreach(fibers()) { fiber ->
-                    fiber.unlink()
-                    fiber.exit(exitReason)
+                Fiberous.Set.foreach(fibers()) { fiber ->
+                    fiber.fiber.unlink()
+                    fiber.fiber.exit(exitReason)
                 }
             }
         }
     }
 
     @Suppress("ClassName")
-    object interrupt : Parameter.O<Fiber<*>, Return<Any?>>(
+    object interrupt : Parameter.O<Fiberous<*>, Return<Any?>>(
         function { _, fiber ->
-            exec { fiber().exit(ExitReason.Interrupt) }
+            exec { fiber().fiber.exit(ExitReason.Interrupt) }
         }
     ) {
         @JvmField
         val one = this
 
         @JvmField
-        val all = function<WBT.Tree<out Fiber<*>>?, Any?> { _, fibers ->
+        val all = function<WBT.Tree<out Fiberous<*>>?, Any?> { _, fibers ->
             exec {
-                Fiber.Set.foreach(fibers()) { fiber ->
-                    fiber.unlink()
-                    fiber.exit(ExitReason.Interrupt)
+                Fiberous.Set.foreach(fibers()) { fiber ->
+                    fiber.fiber.unlink()
+                    fiber.fiber.exit(ExitReason.Interrupt)
                 }
             }
         }
     }
 
     @Suppress("ClassName")
-    object kill : Parameter.O<Fiber<*>, Return<Any?>>(function { _, fiber ->
-        exec { fiber().exit(ExitReason.Kill) }
+    object kill : Parameter.O<Fiberous<*>, Return<Any?>>(function { _, fiber ->
+        exec { fiber().fiber.exit(ExitReason.Kill) }
     }) {
         @JvmField
         val one = this
 
         @JvmField
-        val all = function<WBT.Tree<out Fiber<*>>?, Any?> { _, fibers ->
+        val all = function<WBT.Tree<out Fiberous<*>>?, Any?> { _, fibers ->
             exec {
-                Fiber.Set.foreach(fibers()) { fiber ->
-                    fiber.unlink()
-                    fiber.exit(ExitReason.Kill)
+                Fiberous.Set.foreach(fibers()) { fiber ->
+                    fiber.fiber.unlink()
+                    fiber.fiber.exit(ExitReason.Kill)
                 }
             }
         }
