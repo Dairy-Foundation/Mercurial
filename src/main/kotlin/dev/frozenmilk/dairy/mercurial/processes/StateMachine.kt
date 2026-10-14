@@ -2,7 +2,7 @@ package dev.frozenmilk.dairy.mercurial.processes
 
 import dev.frozenmilk.dairy.mercurial.continuations.Continuation
 
-abstract class StateMachine {
+abstract class StateMachine : Fiberous<Nothing> {
     interface Mode {
         fun enter(previousMode: Mode) {}
         fun eval(): Mode
@@ -34,5 +34,5 @@ abstract class StateMachine {
     private val spawnable = Spawnable.Builder<Nothing>(k)
 
     @get:JvmName("fiber")
-    val fiber = spawnable.spawnLink()
+    final override val fiber = spawnable.spawnLink()
 }

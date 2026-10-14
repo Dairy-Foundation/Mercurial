@@ -24,7 +24,7 @@ import kotlin.time.Duration
 import kotlin.time.DurationUnit
 import kotlin.time.measureTime
 
-class Fiber<out T> {
+class Fiber<out T> : Fiberous<T> {
     companion object {
         @JvmField
         val Set = WBT.MakeSet<Fiber<*>>(Ord.HashCode)
@@ -49,6 +49,8 @@ class Fiber<out T> {
         }
     }
 
+    @get:JvmName("fiber")
+    override val fiber = this
     @get:JvmName("status")
     var status: ProcessStatus = ProcessStatus.Alive
         private set

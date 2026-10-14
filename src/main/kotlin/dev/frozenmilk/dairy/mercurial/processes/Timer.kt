@@ -12,14 +12,18 @@ import kotlin.time.TimeMark
 sealed class Timer<T>(
     val end: TimeMark,
     var message: T,
-) {
+) : Fiberous<T> {
     protected abstract val k: Continuation
     private val spawnable = Spawnable.Builder<T>(k)
-    val fiber = spawnable.spawn()
+    @get:JvmName("fiber")
+    final override val fiber = spawnable.spawn()
+    @get:JvmName("remaining")
     val remaining: Duration
         get() = -end.elapsedNow()
+    @get:JvmName("remainingSeconds")
     val remainingSeconds
         get() = remaining.toDouble(DurationUnit.SECONDS)
+
     fun cancel() = fiber.exit(ExitReason.Interrupt)
 
     companion object {

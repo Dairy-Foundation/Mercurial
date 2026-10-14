@@ -4,17 +4,20 @@ import dev.frozenmilk.dairy.mercurial.continuations.Continuation
 import dev.frozenmilk.dairy.mercurial.processes.Channel.Companion.tryPoll
 import dev.frozenmilk.util.collections.Q
 import org.jetbrains.annotations.Contract
+import java.util.function.Consumer
 
-open class EventManager<EVENT : Any> {
+open class EventManager<EVENT : Any> : Fiberous<Nothing> {
     sealed class EventHandled<out EVENT> {
         companion object {
             @JvmStatic
             @Contract(pure = true)
             fun <EVENT> ok() = Ok as EventHandled<EVENT>
+
             @JvmStatic
             @Contract(pure = true)
             fun <EVENT> remove() = Remove as EventHandled<EVENT>
         }
+
         data object Ok : EventHandled<Nothing>()
         data object Remove : EventHandled<Nothing>()
         data class SwapTo<EVENT>(val handler: Handler<EVENT>) : EventHandled<EVENT>()
@@ -26,7 +29,6 @@ open class EventManager<EVENT : Any> {
     }
 
     private val handlers = Q<Handler<EVENT>>()
-    private val channel = Channel.queue<EVENT>()
 
     private val k = object : Continuation {
         override fun eval() = run {
@@ -47,7 +49,10 @@ open class EventManager<EVENT : Any> {
 
     private val spawnable = Spawnable.Builder<Nothing>(k)
 
-    val fiber = spawnable.spawnLink()
+    @get:JvmName("fiber")
+    final override val fiber = spawnable.spawnLink()
+
+    private val channel: Channel<EVENT> = Channel.queue<EVENT>().also { it.link(fiber) }
 
     fun addHandler(handler: Handler<EVENT>) {
         synchronized(handlers) {
