@@ -23,7 +23,72 @@ open class EventManager<EVENT : Any> : Fiberous<Nothing> {
         data class SwapTo<EVENT>(val handler: Handler<EVENT>) : EventHandled<EVENT>()
     }
 
-    interface Handler<EVENT> {
+    protected open fun eventSource() {}
+
+    companion object {
+        @JvmStatic
+        @Contract(pure = true)
+        fun <EVENT : Any> dependingOn(fiber: Fiberous<*>, handler: Handler<EVENT>): Handler<EVENT> = object : Handler<EVENT> {
+            override fun handleEvent(event: EVENT): EventHandled<EVENT> {
+                val handled = handler.handleEvent(event)
+                return if (fiber.fiber.status.alive) handled
+                else {
+                    handler.remove()
+                    EventHandled.Remove
+                }
+            }
+
+            override fun remove() {
+                handler.remove()
+            }
+        }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <EVENT : Any> dependingOn(channel: Channel<*>, handler: Handler<EVENT>): Handler<EVENT> = object : Handler<EVENT> {
+            override fun handleEvent(event: EVENT): EventHandled<EVENT> {
+                val handled = handler.handleEvent(event)
+                return if (channel.open) handled
+                else {
+                    handler.remove()
+                    EventHandled.Remove
+                }
+            }
+
+            override fun remove() {
+                handler.remove()
+            }
+        }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <EVENT : Any> forwardTo(fiber: Fiberous<*>, f: Consumer<EVENT>): Handler<EVENT> = { event ->
+            f.accept(event)
+            if (fiber.fiber.status.alive) EventHandled.Ok
+            else EventHandled.Remove
+        }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <EVENT : Any> forwardTo(channel: Channel<in EVENT>): Handler<EVENT> = { event ->
+            channel.send(event)
+            if (channel.open) EventHandled.Ok
+            else EventHandled.Remove
+        }
+
+        @JvmStatic
+        @Contract(pure = true)
+        fun <EVENT, MSG : Any> forwardTo(
+            channel: Channel<in MSG>,
+            f: (EVENT) -> MSG,
+        ): Handler<EVENT> = { event ->
+            channel.send(f(event))
+            if (channel.open) EventHandled.Ok
+            else EventHandled.Remove
+        }
+    }
+
+    fun interface Handler<EVENT> {
         fun handleEvent(event: EVENT): EventHandled<EVENT>
         fun remove() {}
     }
@@ -32,6 +97,7 @@ open class EventManager<EVENT : Any> : Fiberous<Nothing> {
 
     private val k = object : Continuation {
         override fun eval() = run {
+            eventSource()
             channel.tryPoll { event ->
                 synchronized(handlers) {
                     handlers.replaceAll { handler ->
